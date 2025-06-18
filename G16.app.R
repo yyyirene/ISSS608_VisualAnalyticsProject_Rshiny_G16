@@ -15,6 +15,8 @@ library(visNetwork)
 library(jsonlite)
 library(shinyWidgets)
 library(lubridate)
+library(ggplot2)
+library(plotly)
 
 
 #——————————————————————————————————influence graph data preparation————————————————————————————————————
@@ -319,6 +321,7 @@ ui <- dashboardPage(
                   `live-search` = TRUE,
                   `none-selected-text` = "Type or select a node name",
                   `style` = "btn-default"
+                  
                 )
               ),
               
@@ -342,14 +345,39 @@ ui <- dashboardPage(
                 )
               ),
               
+              radioButtons(
+                inputId = "notable_filter",
+                label = "Is Notable?",
+                choices = c("All", "TRUE", "FALSE"),
+                selected = "All",
+                inline = TRUE
+              ),
+              
+              pickerInput(
+                inputId = "genre_filter",
+                label = "Select Genre(s)",
+                choices = sort(unique(na.omit(nodes_subgraph$genre))),
+                selected = unique(na.omit(nodes_subgraph$genre)),
+                multiple = TRUE,
+                options = list(`actions-box` = TRUE)
+              ),
+            
+              
               sliderInput("release_range", "Release Year Range",
                           min = 1983,
                           max = 2038,
                           value = c(min_year, max_year),
                           step = 1,
-                          sep = ""),
+                          sep = "",
+              ),
+                          
+                          
+                          
+                         
               
               actionButton("release_range_btn", "Select All Years"),
+              helpText(
+                  "Note: Selecting all years might take a moment. Thanks for your patience."),
               
               sliderInput(
                 inputId = "network_depth",
@@ -361,13 +389,43 @@ ui <- dashboardPage(
                 ticks = TRUE,
                 animate = TRUE
               ),
-              actionButton("network_depth_btn", "Select All network")
+              actionButton("network_depth_btn", "Select All network"),
+              helpText(
+                "Note: Selecting all Network Depths might take a moment. Thanks for your patience.")
             )
           ),
+          
+          
           column(
-            width = 8,
-            visNetworkOutput("directGraph", height = "650px")
+            width = 8,  # 占据整行比较好
+            tabsetPanel(
+              id = "graph_tabs",
+              type = "tabs",
+              
+              tabPanel("Influence Network",
+                       visNetworkOutput("directGraph", height = "725px")
+              ),
+              
+              tabPanel("Summary Statistics",
+                       fluidRow(
+                         column(
+                           width = 12,
+                           div(
+                             style = "margin-top: 30px;",  # 给条形图添加顶部空隙
+                             plotlyOutput("groupEdgeBarPlot", height = "600px"),
+                             verbatimTextOutput("barInfo")
+                           )
+                         )
+                       )
+              )
+              
+              
+              
+              
+              
+            )
           )
+          
         ),
         
         br(),
@@ -383,7 +441,7 @@ ui <- dashboardPage(
         )
       ),
       
-      # --- Other Tabs ---
+      # --- Other Tabs ---------------------------------------------------------------------------
       tabItem(
         tabName = "impact",
         h2("Her Impact & Collaborator"),
@@ -431,14 +489,23 @@ server <- function(input, output, session) {
       req(filtered_edges())
       valid_ids <- unique(c(filtered_edges()$from, filtered_edges()$to))
       
-      nodes_subgraph %>%
+      df <- nodes_subgraph %>%
         filter(
           id %in% valid_ids,
           group %in% input$node_type,
           is.na(release_year) |
             (release_year >= input$release_range[1] & release_year <= input$release_range[2])
         )
+      
+      # ➕ Genre 筛选
+      if (!is.null(input$genre_filter)) {
+        df <- df %>%
+          filter(is.na(genre) | genre %in% input$genre_filter)
+      }
+      
+      df
     })
+    
     
     # 更新节点名称下拉选项
     observe({
@@ -467,6 +534,7 @@ server <- function(input, output, session) {
       
       valid_ids <- filtered_nodes()$id
       
+      
       # 补充颜色与样式
       edges_all <- filtered_edges() %>%
         filter(from %in% valid_ids, to %in% valid_ids) %>%
@@ -476,6 +544,8 @@ server <- function(input, output, session) {
           arrows = "to",
           label = edge_type
         )
+      
+
       
       visNetwork(filtered_nodes(), edges_all, width = "100%", height = "700px") %>%
         visEdges(arrows = "to", color = list(color = edges_all$color)) %>%
@@ -506,10 +576,44 @@ server <- function(input, output, session) {
       }
     })
     
+    
+    observeEvent(input$notable_filter, {
+      req(filtered_nodes())
+      
+      # 清除所有当前选中的节点（无论选什么都先清空）
+      visNetworkProxy("directGraph") %>%
+        visSelectNodes(id = character(0))  
+      
+      if (input$notable_filter == "TRUE") {
+        selected_nodes <- filtered_nodes() %>%
+          filter(notable == TRUE)
+        
+      } else if (input$notable_filter == "FALSE") {
+        selected_nodes <- filtered_nodes() %>%
+          filter(notable == FALSE)
+        
+      } else {
+        return()  # All，什么也不选
+      }
+      
+      if (nrow(selected_nodes) > 0) {
+        visNetworkProxy("directGraph") %>%
+          visSelectNodes(id = selected_nodes$id)
+      }
+    })
+    
+    
+    
+    
+    
+   
+    
+    
     # 设置年份范围（假设为 1983 - 2038）
     observeEvent(input$release_range_btn, {
       updateSliderInput(session, "release_range", value = c(1983, 2038))
     })
+
     
     # 设置网络层数范围（假设最大为 3）
     observeEvent(input$network_depth_btn, {
@@ -521,6 +625,15 @@ server <- function(input, output, session) {
     output$directTable <- renderDT({
       edges_df <- filtered_edges()
       
+      # 如果包含 release_date，则提取 release_year 并过滤
+      if ("release_date" %in% names(edges_df)) {
+        edges_df <- edges_df %>%
+          mutate(release_year = as.numeric(substr(as.character(release_date), 1, 4))) %>%
+          filter(release_year >= input$release_range[1],
+                 release_year <= input$release_range[2])
+      }
+      
+      # 如果字段存在，就展示表格
       if (all(c("from_name", "to_name") %in% names(edges_df))) {
         datatable(
           edges_df %>%
@@ -534,6 +647,68 @@ server <- function(input, output, session) {
         datatable(data.frame(Message = "No data to display"), options = list(dom = 't'))
       }
     })
+    
+    
+    output$groupEdgeBarPlot <- renderPlotly({
+      req(filtered_edges(), filtered_nodes())
+      
+      edge_df <- filtered_edges()
+      node_df <- filtered_nodes()
+      
+      edge_from <- edge_df %>%
+        left_join(node_df, by = c("from" = "id")) %>%
+        rename(node_type = group) %>%
+        mutate(direction = "from")
+      
+      edge_to <- edge_df %>%
+        left_join(node_df, by = c("to" = "id")) %>%
+        rename(node_type = group) %>%
+        mutate(direction = "to")
+      
+      edge_with_nodes <- bind_rows(edge_from, edge_to) %>%
+        filter(!is.na(node_type))
+      
+      summary_df <- edge_with_nodes %>%
+        count(node_type, edge_type)
+      
+      # 添加 text 信息用于 hover 或点击显示
+      summary_df$label <- paste0(
+        "Node Type: ", summary_df$node_type, "<br>",
+        "Edge Type: ", summary_df$edge_type, "<br>",
+        "Count: ", summary_df$n
+      )
+      
+      p <- ggplot(summary_df, aes(x = node_type, y = n, fill = edge_type, text = label)) +
+        geom_bar(stat = "identity") +
+        labs(
+          title = "Influences on Sailor Shift by Node Category and Relationship",
+          x = "Node Type",
+          y = "Count",
+          fill = "Edge Type"
+        ) +
+        theme_minimal() +
+        theme(axis.text.x = element_text(hjust = 1))
+      
+      ggplotly(p, tooltip = "text") %>%
+        layout(hoverlabel = list(
+          font = list(color = "white") # 设置文字为白色
+                       # 可选：设置背景为黑色
+        ))
+      # 转换为交互图
+    })
+    
+    output$barInfo <- renderPrint({
+      click_data <- event_data("plotly_click")
+      if (is.null(click_data)) {
+        "Tips : Click on a bar segment to see details"
+      } else {
+        paste0("You clicked on:\nNode Type: ", click_data$x, 
+               "\nCount: ", click_data$y, 
+               "\nEdge Type: ", click_data$curveNumber + 1)  # 仅近似展示
+      }
+    })
+    
+    
   }
   
 # Run the app
