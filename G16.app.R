@@ -1,4 +1,3 @@
-#
 # This is a Shiny web application. You can run the application by clicking
 # the 'Run App' button above.
 #
@@ -17,6 +16,9 @@ library(shinyWidgets)
 library(lubridate)
 library(ggplot2)
 library(plotly)
+library(jsonlite)
+library(dplyr)
+library(networkD3)
 
 
 #——————————————————————————————————influence graph data preparation————————————————————————————————————
@@ -24,7 +26,11 @@ library(plotly)
 kg <- fromJSON("data/MC1_graph.json")
 
 nodes_tbl <- as_tibble(kg$nodes)
-edges_tbl <- as_tibble(kg$links) 
+edges_tbl <- as_tibble(kg$links)
+
+nodes_df <- as.data.frame(kg$nodes)
+edges_df <- as.data.frame(kg$links)
+all_nodes <- nodes_df
 
 id_map <- tibble(id = nodes_tbl$id,  #Retrieve the ID column of each row node
                  index = seq_len(
@@ -440,7 +446,6 @@ ui <- dashboardPage(
           )
         )
       ),
-      
       # --- Other Tabs ---------------------------------------------------------------------------
       tabItem(
         tabName = "impact",
@@ -453,8 +458,53 @@ ui <- dashboardPage(
         h2("Community Influence"),
         h3("How has she influenced collaborators of the broader Oceanus Folk community?")
       ),
+    # ----------- Genre Diffusion Tracker ---------------
+    tabItem(tabName = "genre",
+            fluidRow(
+              
+              column(width = 3,
+                     box(title = "Control Panel", status = "info", solidHeader = TRUE, width = 13,
+                         selectInput("mainGenre", "Main Genre",
+                                     choices = sort(unique(na.omit(all_nodes$genre))),
+                                     selected = "Oceanus Folk"
+                         ),
+                         sliderInput("yearRange", "Year Range:",
+                                     min = 1983, max = 2038, value = c(1990, 2025), sep = ""
+                         ),
+                         selectInput("nodeType", "Node Type:",
+                                     choices = c("Song (Track)" = "Song", "Album" = "Album"),
+                                     selected = "Song"
+                         ),
+                         radioButtons("hopDepth", "Influence Path Depth:",
+                                      choices = c("1-hop" = 1, "2-hop" = 2), selected = 1
+                         )
+                     )
+              ),
+              
+              # 中间图表区域 + Detail panel 并排显示
+              column(width = 9,
+                     fluidRow(
+                       column(width = 8,
+                              box(title = "Timeline Trend", status = "primary", solidHeader = TRUE, width = 14,
+                                  plotlyOutput("trendPlot", height = "200px")
+                              ),
+                              box(title = "Genre Influence Network", status = "primary", solidHeader = TRUE, width = 14,
+                                  visNetworkOutput("genreNetwork", height = "250px")
+                              ),
+                              box(title = "Genre Influence Backflow", status = "primary", solidHeader = TRUE, width = 14,
+                                  sankeyNetworkOutput("genreSankey", height = "250px")
+                              )
+                       ),
+                       column(width = 4,
+                              box(title = "Detail Panel", status = "primary", solidHeader = TRUE, width = 12,
+                                  uiOutput("detailPanel")
+                              )
+                       )
+                     )
+              )
+            )
+    ),
       
-      tabItem(tabName = "genre", h2("Genre Diffusion Module")),
       tabItem(tabName = "talent", h2("Talent Radar Module")),
       tabItem(tabName = "trend", h2("Trend Dashboard Module"))
       
@@ -463,7 +513,7 @@ ui <- dashboardPage(
 
 #—————————————————————————————————————————————————————————————————————————————————————————— 
 server <- function(input, output, session) {
-    
+  
     # 更新筛选后的边（确保字段完整）
     filtered_edges <- reactive({
       req(input$network_depth, input$edge_type)
@@ -708,7 +758,175 @@ server <- function(input, output, session) {
       }
     })
     
+    # ------------- Genre Diffusion Tracker Sever Part -----------------
+    graph_data <- fromJSON("data/MC1_graph.json")
+    nodes_df <- as.data.frame(graph_data$nodes)
+    edges_df <- as.data.frame(graph_data$links)
     
+    all_nodes <- nodes_df
+    
+    # Reactive filtering: filter nodes and edges based on user input
+    filtered <- reactive({
+      
+      nodes <- all_nodes 
+      edges <- edges_df
+      
+      # Only keep nodes that are Song or Album and have genre
+      nodes <- nodes %>%
+        filter(`Node Type` %in% c("Song", "Album"), !is.na(genre))
+      
+      # Filter by year (assumes release_date is year string)
+      yr <- input$yearRange
+      if (!is.null(yr)) {
+        nodes <- nodes %>%
+          filter(!is.na(release_date) & as.numeric(release_date) >= yr[1] & 
+                   as.numeric(release_date) <= yr[2])
+      }
+      
+      # Filter by node type
+      if (!is.null(input$nodeType) && input$nodeType != "") {
+        nodes <- nodes %>% filter(`Node Type` == input$nodeType)
+      }
+      
+      # Join genre info
+      edges <- edges %>%
+        left_join(nodes %>% select(id, genre), by = c("source" = "id")) %>%
+        rename(source_genre = genre) %>%
+        left_join(nodes %>% select(id, genre), by = c("target" = "id")) %>%
+        rename(target_genre = genre)
+      
+      list(nodes = nodes, edges = edges)
+    })
+    
+    observe({
+      updateSelectInput(session, "mainGenre",
+                        choices = sort(unique(na.omit(nodes_df$genre))),
+                        selected = "Oceanus Folk")
+    })
+    
+    # Timeline trend plot: count genre nodes influenced by Oceanus Folk per year
+    output$trendPlot <- renderPlotly({
+      data <- filtered()$nodes
+      if (nrow(data) == 0) return(NULL)
+      # Extract year and count number of nodes per genre per year
+      df <- data %>% 
+        filter(!is.na(release_date)) %>%
+        mutate(Year = as.numeric(release_date)) %>%
+        group_by(Year, genre) %>%
+        summarize(Count = n(), .groups = 'drop')
+      if (nrow(df) == 0) return(NULL)
+      # Plot stacked area chart
+      p <- ggplot(df, aes(x = Year, y = Count, fill = genre)) +
+        geom_area(alpha = 0.6) +
+        labs(x = "Year", y = "Affected Count", fill = "Genre") +
+        theme_minimal()
+      ggplotly(p)
+    })
+    
+    # Genre influence network: centered on Oceanus Folk showing influence connections
+    output$genreNetwork <- renderVisNetwork({
+      data <- filtered()
+      nodes <- data$nodes
+      edges <- data$edges
+      if (nrow(nodes) == 0 || nrow(edges) == 0) return(NULL)
+      
+      main_genre <- input$mainGenre
+      
+      # 用 all_nodes 获取主 genre 节点 ID
+      main_ids <- all_nodes %>% filter(genre == main_genre) %>% pull(id)
+      if (length(main_ids) == 0) return(NULL)
+      
+      if (input$hopDepth == 1) {
+        edges_sub <- edges %>% filter(source %in% main_ids | target %in% main_ids)
+        nodes_sub <- nodes %>% filter(id %in% unique(c(edges_sub$source, edges_sub$target)))
+      } else {
+        one_hop <- edges %>% filter(source %in% main_ids | target %in% main_ids) %>%
+          pull(source, target) %>% unlist() %>% unique()
+        edges_sub <- edges %>% filter(source %in% c(main_ids, one_hop) | target %in% c(main_ids, one_hop))
+        nodes_sub <- nodes %>% filter(id %in% unique(c(edges_sub$source, edges_sub$target)))
+      }
+      
+      vis_nodes <- data.frame(id = nodes_sub$id, label = nodes_sub$name,
+                              value = 10, group = nodes_sub$genre)
+      vis_edges <- data.frame(from = edges_sub$source, to = edges_sub$target, arrows = "to")
+      
+      visNetwork(vis_nodes, vis_edges) %>%
+        visOptions(highlightNearest = list(enabled = TRUE, degree = 1),
+                   nodesIdSelection = TRUE)
+    })
+    
+    # Sankey diagram: backflow influence from other genres to Oceanus Folk
+    output$genreSankey <- renderSankeyNetwork({
+      data <- filtered()$edges
+      nodes <- filtered()$nodes
+      if (nrow(data) == 0 || nrow(nodes) == 0) return(NULL)
+      
+      main_genre <- input$mainGenre
+      
+      # Filter for edges where only one side is Oceanus Folk
+      sankey_links <- data %>%
+        filter(
+          !is.na(source_genre) & !is.na(target_genre),
+          (target_genre != main_genre & source_genre == main_genre) |
+            (source_genre != main_genre & target_genre == main_genre)
+        ) %>%
+        mutate(
+          FromGenre = ifelse(target_genre == main_genre, source_genre, target_genre),
+          ToGenre = main_genre
+        ) %>%
+        group_by(FromGenre, ToGenre) %>%
+        summarize(Value = n(), .groups = 'drop')
+    
+      
+      if (nrow(sankey_links) == 0) return(NULL)
+      
+      # Create nodes and links
+      sankey_nodes <- data.frame(name = unique(c(sankey_links$FromGenre, sankey_links$ToGenre)))
+      sankey_links <- sankey_links %>%
+        mutate(
+          source = match(FromGenre, sankey_nodes$name) - 1,
+          target = match(ToGenre, sankey_nodes$name) - 1
+        )
+      
+      sankeyNetwork(
+        Links = sankey_links,
+        Nodes = sankey_nodes,
+        Source = "source",
+        Target = "target",
+        Value = "Value",
+        NodeID = "name",
+        fontSize = 12,
+        nodeWidth = 30
+      )
+      
+    })
+    
+    # Detail panel: show node details upon selection
+    output$detailPanel <- renderUI({
+      # Assume visNetwork selection triggers input$genreNetwork_selected
+      sel_id <- input$genreNetwork_selected
+      if (is.null(sel_id)) {
+        return(tags$p("Click a node in the network or Sankey diagram to view details."))
+      }
+      # Look up selected node information
+      node_row <- nodes_df %>% filter(id == sel_id)
+      if (nrow(node_row) == 0) return(NULL)
+      # Sample field extraction (adjust to your schema)
+      name    <- node_row$name
+      works   <- ifelse(!is.null(node_row$representative_works), node_row$representative_works, "N/A")
+      activeY <- ifelse(!is.null(node_row$release_date), node_row$release_date, "Unknown")
+      # Check whether there is collaboration or similarity with Sailor Shift
+      sshift_id <- nodes_df$id[nodes_df$name == "Sailor Shift"]
+      related <- any(edges_df$Edge.Type %in% c("MemberOf", "InStyleOf", "LyricistOf", "LyricalReferenceTo") &
+                       ((edges_df$source == sel_id & edges_df$target == sshift_id) |
+                          (edges_df$source == sshift_id & edges_df$target == sel_id)))
+      tagList(
+        h4(paste0("Name: ", name)),
+        p(paste0("Representative Works: ", works)),
+        p(paste0("Active Year: ", activeY)),
+        p(paste0("Collaboration / Style Similarity with Sailor Shift: ", ifelse(related, "Yes", "No")))
+      )
+    })
   }
   
 # Run the app
