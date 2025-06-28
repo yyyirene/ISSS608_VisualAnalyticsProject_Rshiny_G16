@@ -201,6 +201,14 @@ min_year <- 1983
 max_year <- 2038
 
 
+#———————————————————————————————————————1.2————————————————————————————————————————————
+
+
+
+
+
+
+
 
 #————————————————————————————————————————————————————————————————————————————————————
 ui <- dashboardPage(
@@ -221,11 +229,7 @@ ui <- dashboardPage(
       menuItem("Home", tabName = "home", icon = icon("home")),
       
       #-------------------------Influence Graph-------------------------#
-      menuItem("Influence Analysis", icon = icon("project-diagram"),
-               menuSubItem("Influenced By", tabName = "influenced"),
-               menuSubItem("Her Impact & Collaborator", tabName = "impact"),
-               menuSubItem("Community Influence", tabName = "community")
-      ),
+      menuItem("Influence Analysis", tabName = "influenced", icon = icon("project-diagram")),
       #------------------------------------------------------------------#
       
       menuItem("Genre Diffusion", tabName = "genre", icon = icon("fire")),
@@ -233,6 +237,8 @@ ui <- dashboardPage(
       menuItem("Trend Dashboard", tabName = "trend", icon = icon("chart-bar"))
     )
   ),
+  
+  
   dashboardBody(
     tabItems(
       
@@ -265,201 +271,194 @@ ui <- dashboardPage(
         )
       ),
       
-      # --- Influenced Tab ---
-      tabItem(
-        tabName = "influenced",
-        fluidRow(
-          column(
-            width = 12,
-            box(
-              width = 12,
-              title = NULL,
-              solidHeader = FALSE,
-              status = "primary",
-              collapsible = FALSE,
-              div(
-                style = "padding: 20px; background-color: #f8f9fa; border-radius: 5px;",
-                h2("Who has Sailor Shift been influenced by?"),
-                br(),
-                p("To visualize the influence on Sailor Shift, we explored both direct and indirect connections,
-                along with how these evolved over time. The visual analysis process followed three key steps:"),
-                tags$ol(
-                  tags$li("Identify the individuals who directly influenced her."),
-                  tags$li("Examine the works created by Sailor Shift, and trace any indirect influences on these works from others."),
-                  tags$li("Apply a timeline to analyze how these influences evolved over time and observe any trends in their impact.")
-                )
-              )
-            )
-          )
-        ),
-        
-        br(),
-        
-        fluidRow(
-          column(
-            width = 4,
-            wellPanel(
-              pickerInput(
-                inputId = "node_type",
-                label = "Select Node Type",
-                choices = sort(unique(nodes_subgraph$group)),
-                selected = unique(nodes_subgraph$group),
-                multiple = TRUE,
-                options = list(
-                  `actions-box` = TRUE,
-                  `live-search` = TRUE
-                )
-              ),
-              pickerInput(
-                inputId = "node_name",
-                label = "Search Node Name",
-                choices = sort(unique(nodes_subgraph$label)),
-                selected = NULL,
-                multiple = TRUE,
-                options = list(
-                  `actions-box` = TRUE,
-                  `live-search` = TRUE,
-                  `none-selected-text` = "Type or select a node name",
-                  `style` = "btn-default"
-                  
-                )
-              ),
-              
-              helpText(
-                tagList(
-                  "Note: Selecting a node will zoom in and highlight it in the network graph.",
-                  tags$br(),
-                  "Tip: Click on a node to reveal more detailed information."
-                )
-              ),
-              
-              pickerInput(
-                inputId = "edge_type",
-                label = "Select Edge Type",
-                choices = sort(unique(edges_subgraph$label)),
-                selected = unique(edges_subgraph$label),
-                multiple = TRUE,
-                options = list(
-                  `actions-box` = TRUE,
-                  `live-search` = TRUE
-                )
-              ),
-              
-              radioButtons(
-                inputId = "notable_filter",
-                label = "Is Notable?",
-                choices = c("All", "TRUE", "FALSE"),
-                selected = "All",
-                inline = TRUE
-              ),
-              
-              pickerInput(
-                inputId = "genre_filter",
-                label = "Select Genre(s)",
-                choices = sort(unique(na.omit(nodes_subgraph$genre))),
-                selected = unique(na.omit(nodes_subgraph$genre)),
-                multiple = TRUE,
-                options = list(`actions-box` = TRUE)
-              ),
-            
-              
-              sliderInput("release_range", "Release Year Range",
-                          min = 1983,
-                          max = 2038,
-                          value = c(min_year, max_year),
-                          step = 1,
-                          sep = "",
-              ),
-                          
-                          
-                          
-                         
-              
-              actionButton("release_range_btn", "Select All Years"),
-              helpText(
-                  "Note: Selecting all years might take a moment. Thanks for your patience."),
-              
-              sliderInput(
-                inputId = "network_depth",
-                label = "Select Network Depth (Layers from Sailor Shift)",
-                min = 1,
-                max = 3,
-                value = 2,
-                step = 1,
-                ticks = TRUE,
-                animate = TRUE
-              ),
-              actionButton("network_depth_btn", "Select All network"),
-              helpText(
-                "Note: Selecting all Network Depths might take a moment. Thanks for your patience.")
+    tabItem(
+  tabName = "influenced",
+  fluidRow(
+    column(
+      width = 12,
+      tabBox(
+        id = "influence_tabs",
+        title = "Sailor Shift Influence Analysis",
+        width = 12,
+        side = "left",
+
+        # ===== Tab 1: Influenced by =====
+        tabPanel(
+          "Influenced by",
+
+          div(
+            style = "padding: 20px; background-color: #f8f9fa; border-radius: 5px;",
+            h2("Who has Sailor Shift been influenced by?"),
+            br(),
+            p("To visualize the influence on Sailor Shift, we explored both direct and indirect connections,
+              along with how these evolved over time. The visual analysis process followed three key steps:"),
+            tags$ol(
+              tags$li("Identify the individuals who directly influenced her."),
+              tags$li("Examine the works created by Sailor Shift, and trace any indirect influences on these works from others."),
+              tags$li("Apply a timeline to analyze how these influences evolved over time and observe any trends in their impact.")
             )
           ),
-          
-          
-          column(
-            width = 8,  # 占据整行比较好
-            tabsetPanel(
-              id = "graph_tabs",
-              type = "tabs",
-              
-              tabPanel("Influence Network",
-                       visNetworkOutput("directGraph", height = "725px")
-              ),
-              
-              tabPanel("Summary Statistics",
-                       fluidRow(
-                         column(
-                           width = 12,
-                           div(
-                             style = "margin-top: 30px;",  # 给条形图添加顶部空隙
-                             plotlyOutput("groupEdgeBarPlot", height = "600px"),
-                             verbatimTextOutput("barInfo")
-                           )
-                         )
-                       )
+
+          br(),
+
+          # Filters
+          fluidRow(
+            column(
+              width = 4,
+              wellPanel(
+                pickerInput(
+                  inputId = "node_type",
+                  label = "Select Node Type",
+                  choices = sort(unique(nodes_subgraph$group)),
+                  selected = unique(nodes_subgraph$group),
+                  multiple = TRUE,
+                  options = list(`actions-box` = TRUE, `live-search` = TRUE)
+                ),
+                pickerInput(
+                  inputId = "node_name",
+                  label = "Search Node Name",
+                  choices = sort(unique(nodes_subgraph$label)),
+                  selected = NULL,
+                  multiple = TRUE,
+                  options = list(
+                    `actions-box` = TRUE,
+                    `live-search` = TRUE,
+                    `none-selected-text` = "Type or select a node name",
+                    `style` = "btn-default"
+                  )
+                ),
+                helpText(tagList(
+                  "Note: Selecting a node will zoom in and highlight it in the network graph.",
+                  tags$br(), "Tip: Click on a node to reveal more detailed information."
+                )),
+                pickerInput(
+                  inputId = "edge_type",
+                  label = "Select Edge Type",
+                  choices = sort(unique(edges_subgraph$label)),
+                  selected = unique(edges_subgraph$label),
+                  multiple = TRUE,
+                  options = list(`actions-box` = TRUE, `live-search` = TRUE)
+                ),
+                radioButtons(
+                  inputId = "notable_filter",
+                  label = "Is Notable?",
+                  choices = c("All", "TRUE", "FALSE"),
+                  selected = "All",
+                  inline = TRUE
+                ),
+                pickerInput(
+                  inputId = "genre_filter",
+                  label = "Select Genre(s)",
+                  choices = sort(unique(na.omit(nodes_subgraph$genre))),
+                  selected = unique(na.omit(nodes_subgraph$genre)),
+                  multiple = TRUE,
+                  options = list(`actions-box` = TRUE)
+                ),
+                sliderInput("release_range", "Release Year Range",
+                  min = 1983, max = 2038,
+                  value = c(min_year, max_year), step = 1, sep = ""
+                ),
+                actionButton("release_range_btn", "Select All Years"),
+                helpText("Note: Selecting all years might take a moment. Thanks for your patience."),
+                sliderInput("network_depth", "Select Network Depth (Layers from Sailor Shift)",
+                  min = 1, max = 3, value = 2, step = 1,
+                  ticks = TRUE, animate = TRUE
+                ),
+                actionButton("network_depth_btn", "Select All network"),
+                helpText("Note: Selecting all Network Depths might take a moment. Thanks for your patience.")
               )
-              
-              
-              
-              
-              
+            ),
+
+            column(
+              width = 8,
+              tabsetPanel(
+                id = "graph_tabs",
+                type = "tabs",
+                tabPanel("Influence Network",
+                         visNetworkOutput("directGraph", height = "725px")),
+                tabPanel("Summary Statistics",
+                         fluidRow(
+                           column(
+                             width = 12,
+                             div(
+                               style = "margin-top: 30px;",
+                               plotlyOutput("groupEdgeBarPlot", height = "600px"),
+                               verbatimTextOutput("barInfo")
+                             )
+                           )
+                         ))
+              )
+            )
+          ),
+
+          br(),
+
+          fluidRow(
+            column(
+              width = 12,
+              div(
+                style = "padding-left: 30px; padding-right: 30px;",
+                DTOutput("directTable", width = "100%")
+              )
+            )
+          )
+        ),
+
+        # ===== Tab 2: Her Impact & Collaborators =====
+        tabPanel(
+          "Her Impact & Collaborators",
+         
+          div(
+            style = "padding: 20px; background-color: #f8f9fa; border-radius: 5px;",
+            h2("Who has she collaborated with and directly or indirectly influenced? "),
+            br(),
+            p("To explore who Sailor Shift has collaborated with and whom she has directly or indirectly influenced, 
+              we centered our analysis around her role in the Oceanus Folk network."),
+            tags$ol(
+              tags$li("Analyze the network to determine who has been influenced by her work, both directly and indirectly."),
+              tags$li("Identify key collaborators who worked directly with Sailor Shift."),
+              tags$li("Visualize the evolution and spread of her impact over time.")
+            )
+          )),
+          
+         
+        
+        # ===== Tab 3: Community Influence =====
+        tabPanel(
+          "Community Influence",
+          div(
+            style = "padding: 20px; background-color: #f8f9fa; border-radius: 5px;",
+            h2("Her Influence on the Oceanus Folk Community"),
+            br(),
+            p("Based on the network results, Copper Canyon Ghosts is identified as an Oceanus Folk band."),
+            p("To address the third analytical question — ",
+              tags$b("How has Sailor Shift influenced collaborators within the broader Oceanus Folk community?"),
+              " — we explore both direct and indirect influence paths."),
+            tags$ol(
+              tags$li("Identify all artists and groups influenced by Sailor Shift."),
+              tags$li("Filter those belonging to the Oceanus Folk genre using the 'genre' field."),
+              tags$li("Trace both direct and second-level indirect influence paths from Sailor Shift to Oceanus Folk collaborators.")
             )
           )
           
-        ),
-        
-        br(),
-        
-        fluidRow(
-          column(
-            width = 12,
-            div(
-              style = "padding-left: 30px; padding-right: 30px;",
-              DTOutput("directTable", width = "100%")
-            )
-          )
         )
-      ),
+      )
+    )
+  )
+)
+,
       
       # --- Other Tabs ---------------------------------------------------------------------------
-      tabItem(
-        tabName = "impact",
-        h2("Her Impact & Collaborator"),
-        h3("Who has she collaborated with and directly or indirectly influenced?")
-      ),
-      
-      tabItem(
-        tabName = "community",
-        h2("Community Influence"),
-        h3("How has she influenced collaborators of the broader Oceanus Folk community?")
-      ),
       
       tabItem(tabName = "genre", h2("Genre Diffusion Module")),
       tabItem(tabName = "talent", h2("Talent Radar Module")),
       tabItem(tabName = "trend", h2("Trend Dashboard Module"))
       
     ) # End of tabItems
-  )) # End of dashboardBody
+  ) )  # End of dashboardBody
+
+
+
 
 #—————————————————————————————————————————————————————————————————————————————————————————— 
 server <- function(input, output, session) {
@@ -544,7 +543,6 @@ server <- function(input, output, session) {
           arrows = "to",
           label = edge_type
         )
-      
 
       
       visNetwork(filtered_nodes(), edges_all, width = "100%", height = "700px") %>%
@@ -603,12 +601,6 @@ server <- function(input, output, session) {
     })
     
     
-    
-    
-    
-   
-    
-    
     # 设置年份范围（假设为 1983 - 2038）
     observeEvent(input$release_range_btn, {
       updateSliderInput(session, "release_range", value = c(1983, 2038))
@@ -648,12 +640,19 @@ server <- function(input, output, session) {
       }
     })
     
-    
     output$groupEdgeBarPlot <- renderPlotly({
       req(filtered_edges(), filtered_nodes())
       
       edge_df <- filtered_edges()
       node_df <- filtered_nodes()
+      
+      # ⬇️ 加入 notable_filter 逻辑
+      node_df <- node_df %>%
+        filter(
+          input$notable_filter == "All" |
+            (input$notable_filter == "TRUE"  & notable == TRUE) |
+            (input$notable_filter == "FALSE" & (is.na(notable) | notable == FALSE))
+        )
       
       edge_from <- edge_df %>%
         left_join(node_df, by = c("from" = "id")) %>%
@@ -671,7 +670,6 @@ server <- function(input, output, session) {
       summary_df <- edge_with_nodes %>%
         count(node_type, edge_type)
       
-      # 添加 text 信息用于 hover 或点击显示
       summary_df$label <- paste0(
         "Node Type: ", summary_df$node_type, "<br>",
         "Edge Type: ", summary_df$edge_type, "<br>",
@@ -691,11 +689,10 @@ server <- function(input, output, session) {
       
       ggplotly(p, tooltip = "text") %>%
         layout(hoverlabel = list(
-          font = list(color = "white") # 设置文字为白色
-                       # 可选：设置背景为黑色
+          font = list(color = "white")
         ))
-      # 转换为交互图
     })
+    
     
     output$barInfo <- renderPrint({
       click_data <- event_data("plotly_click")
