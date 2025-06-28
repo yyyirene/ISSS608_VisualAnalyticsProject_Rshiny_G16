@@ -206,6 +206,111 @@ edges_subgraph <- all_edges %>%
 min_year <- 1983
 max_year <- 2038
 
+# —————————————————————————————————— Talent Radar Module 3: Data Preparation ——————————————————————————————————
+
+# Load packages
+library(jsonlite)
+library(dplyr)
+library(tidygraph)
+library(tibble)
+
+# Load and prepare data
+data_path <- "data/MC1_graph.json"
+kg <- fromJSON(data_path)
+
+nodes_tbl <- as_tibble(kg$nodes) %>%
+  rename(node_name = name) %>%
+  mutate(index = row_number())
+
+edges_tbl <- as_tibble(kg$links)
+
+id_map <- nodes_tbl %>% select(id, index)
+
+edges_tbl_graph <- edges_tbl %>%
+  left_join(id_map, by = c("source" = "id")) %>% rename(from = index) %>%
+  left_join(id_map, by = c("target" = "id")) %>% rename(to = index) %>%
+  filter(!is.na(from), !is.na(to))
+
+# Create tidygraph object
+g_tbl <- tbl_graph(
+  nodes = nodes_tbl,
+  edges = edges_tbl_graph,
+  directed = TRUE
+)
+
+# Talent scoring function
+prepare_talent_score_from_graph <- function(g_tbl) {
+  nodes <- as_tibble(g_tbl, active = "nodes")
+  edges <- as_tibble(g_tbl, active = "edges")
+  
+  # Identify notable works
+  notable_work_ids <- nodes %>%
+    filter(`Node Type` %in% c("Song", "Album"), notable == TRUE) %>%
+    pull(index)
+  
+  # Identify contributing persons
+  contributing_persons <- edges %>%
+    filter(to %in% notable_work_ids,
+           `Edge Type` %in% c("PerformerOf", "ComposerOf", "ProducerOf", "LyricistOf")) %>%
+    pull(from) %>% unique()
+  
+  # Prepare person dataframe with genre and recency
+  person_df <- nodes %>%
+    filter(`Node Type` == "Person") %>%
+    select(index, label = node_name, notoriety_date, written_date, genre) %>%
+    mutate(
+      notoriety_year = as.numeric(substr(notoriety_date, 1, 4)),
+      notoriety_recency = pmax(0, 1 - (2025 - notoriety_year) / 20),
+      notable_label = ifelse(index %in% contributing_persons, 1, 0)
+    )
+  
+  # Add graph features
+  graph_with_features <- g_tbl %>%
+    activate(nodes) %>%
+    mutate(
+      degree = centrality_degree(),
+      pagerank = centrality_pagerank()
+    )
+  
+  graph_features <- as_tibble(graph_with_features, active = "nodes") %>%
+    filter(`Node Type` == "Person") %>%
+    select(index, degree, pagerank)
+  
+  # Merge all features
+  features <- person_df %>%
+    left_join(graph_features, by = "index") %>%
+    mutate(across(c(degree, pagerank, notoriety_recency), ~replace_na(., 0)))
+  
+  # Train logistic regression model
+  if (nrow(features) < 10 || length(unique(features$notable_label)) < 2) {
+    stop("❌ Training data insufficient or lacks positive/negative samples.")
+  }
+  
+  model <- glm(notable_label ~ degree + pagerank + notoriety_recency,
+               data = features, family = binomial)
+  
+  # Predict and format results
+  features$predicted_prob <- predict(model, newdata = features, type = "response")
+  features <- features %>%
+    arrange(desc(predicted_prob)) %>%
+    mutate(
+      recommendation = paste0(
+        "🎧 ", label, " shows ",
+        ifelse(pagerank > 0.5, "high influence, ", "moderate impact, "),
+        ifelse(notoriety_recency > 0.6, "and recent notoriety. ", "with steady activity. "),
+        "Potential score: ", round(predicted_prob * 100, 1), "%"
+      )
+    ) %>%
+    mutate(id = index) %>%  # For visNetwork
+    select(id, label, genre, degree, pagerank, notoriety_year, notoriety_recency,
+           predicted_prob, notable_label, recommendation)
+  
+  return(list(model = model, scored = features))
+}
+
+# Generate result
+talent_model_result <- prepare_talent_score_from_graph(g_tbl)
+talent_score_df <- talent_model_result$scored
 
 
 #————————————————————————————————————————————————————————————————————————————————————
@@ -505,9 +610,178 @@ ui <- dashboardPage(
             )
     ),
       
-      tabItem(tabName = "talent", h2("Talent Radar Module")),
-      tabItem(tabName = "trend", h2("Trend Dashboard Module"))
-      
+    # --- Talent Radar UI ---
+    tabItem(
+      tabName = "talent",
+      fluidPage(
+        fluidRow(
+          box(
+            title = "Talent Scoring & Emerging Artist Radar",
+            width = 12,
+            solidHeader = TRUE,
+            status = "primary",
+            collapsible = TRUE,
+            tabsetPanel(
+              id = "talent_tabs",
+              type = "tabs",
+              
+              # --- Score Explorer Panel ---
+              tabPanel(
+                "Score Explorer",
+                fluidRow(
+                  # Controls
+                  column(
+                    width = 4,
+                    pickerInput(
+                      inputId = "talent_genre",
+                      label = "Filter by Genre",
+                      choices = unique(na.omit(nodes_tbl$genre)),
+                      selected = "Oceanus Folk",
+                      multiple = TRUE,
+                      options = list(`actions-box` = TRUE, `live-search` = TRUE)
+                    ),
+                    uiOutput("select_compare_artists"),
+                    hr(),
+                    h4("Customize Score Weights"),
+                    sliderInput("weight_pagerank", "PageRank", 0, 1, 0.3, 0.1),
+                    helpText("PageRank indicates the global influence of an artist within the network."),
+                    sliderInput("weight_degree", "Degree Centrality", 0, 1, 0.2, 0.1),
+                    helpText("Degree Centrality measures the number of direct connections an artist has."),
+                    sliderInput("weight_similarity", "Style Similarity", 0, 1, 0.3, 0.1),
+                    helpText("Style Similarity reflects contributions to selected‐genre works."),
+                    sliderInput("weight_notable_count", "Notable Works Count", 0, 1, 0.2, 0.1),
+                    helpText("Notable Works Count is the normalized count of an artist's works marked as notable."),
+                    hr(),
+                    downloadButton("download_weighted_scores", "📥 Download CSV")
+                  ),
+                  
+                  # Outputs
+                  column(
+                    width = 8,
+                    tabsetPanel(
+                      tabPanel("Radar Comparison", plotlyOutput("talent_radar_plot", height = "550px")),
+                      tabPanel("Scoreboard", DTOutput("talent_score_table"))
+                    )
+                  )
+                )
+              ), # end Score Explorer
+              
+              # --- Artist Snapshots Panel ---
+              tabPanel(
+                "Artist Snapshots",
+                sidebarLayout(
+                  sidebarPanel(
+                    pickerInput(
+                      inputId = "snapshot_artist_detail",
+                      label = "Select Artist for Subgraph",
+                      choices = NULL,
+                      multiple = FALSE,
+                      options = list(`live-search` = TRUE)
+                    ),
+                    pickerInput(
+                      inputId = "snap_node_type",
+                      label = "Select Node Type",
+                      choices = sort(unique(nodes_subgraph$group)),
+                      selected = unique(nodes_subgraph$group),
+                      multiple = TRUE,
+                      options = list(`actions-box` = TRUE)
+                    ),
+                    pickerInput(
+                      inputId = "snap_edge_type",
+                      label = "Select Edge Type",
+                      choices = sort(unique(edges_subgraph$edge_type)),
+                      selected = unique(edges_subgraph$edge_type),
+                      multiple = TRUE,
+                      options = list(`actions-box` = TRUE)
+                    ),
+                    sliderInput(
+                      inputId = "snap_release_range",
+                      label = "Release Year Range",
+                      min = min_year,
+                      max = max_year,
+                      value = c(min_year, max_year),
+                      sep = ""
+                    ),
+                    sliderInput(
+                      inputId = "snap_network_depth",
+                      label = "Network Depth",
+                      min = 1,
+                      max = 3,
+                      value = 2,
+                      step = 1
+                    )
+                  ),
+                  mainPanel(
+                    h4("Artist Influence Subgraph"),
+                    visNetworkOutput("snapshot_influence_graph", height = "600px")
+                  )
+                )
+              )  # end Artist Snapshots
+              
+            ) # end tabsetPanel
+          ) # end box
+        ) # end fluidRow
+      ) # end fluidPage
+    ), # end tabItem("talent"),
+    # --- Trend Dashboard UI ---
+    tabItem(tabName = "trend",
+            fluidPage(
+              fluidRow(
+                box(
+                  title = "Genre Diffusion & Artist Trend Explorer",
+                  width = 12,
+                  solidHeader = TRUE,
+                  status = "primary",
+                  collapsible = TRUE,
+                  tabsetPanel(
+                    tabPanel("Trend Overview",
+                             fluidRow(
+                               column(
+                                 width = 4,
+                                 pickerInput("trend_genre", "Select Genre(s)",
+                                             choices = unique(na.omit(nodes_tbl$genre)),
+                                             selected = "Oceanus Folk", multiple = TRUE,
+                                             options = list(`actions-box` = TRUE)),
+                                 dateRangeInput("trend_year_range", "Year Range",
+                                                start = as.Date("2005-01-01"), end = as.Date("2025-12-31")),
+                                 checkboxGroupInput("trend_layers", "Show Layers",
+                                                    choices = c("Artist Count", "Song Count", "Newcomer Count"),
+                                                    selected = c("Artist Count", "Song Count")),
+                                 hr(),
+                                 checkboxInput("trend_entropy", "Show Genre Fusion Index (Entropy)", TRUE),
+                                 checkboxInput("highlight_peak", "Highlight Peak Years", TRUE),
+                                 downloadButton("download_trend_data", "📥 Export Trend Data")
+                               ),
+                               column(
+                                 width = 8,
+                                 tabsetPanel(
+                                   tabPanel("Stacked Area Chart", plotlyOutput("trend_area_plot", height = "500px")),
+                                   tabPanel("Yearly Heatmap", plotlyOutput("trend_heatmap", height = "500px"))
+                                 )
+                               )
+                             )
+                    ),
+                    tabPanel("Genre Diffusion Map",
+                             fluidRow(
+                               column(
+                                 width = 12,
+                                 h4("🎼 Style Diffusion Chord Diagram"),
+                                 plotlyOutput("chord_diffusion_plot", height = "600px")
+                               )
+                             )
+                    ),
+                    tabPanel("Artist Spotlight",
+                             fluidRow(
+                               column(width = 12, DTOutput("trend_artist_table"))
+                             )
+                    )
+                  )
+                )
+              )
+            )
+    )
+    
+    
     ) # End of tabItems
   )) # End of dashboardBody
 
@@ -927,7 +1201,224 @@ server <- function(input, output, session) {
         p(paste0("Collaboration / Style Similarity with Sailor Shift: ", ifelse(related, "Yes", "No")))
       )
     })
-  }
+    # --- Server: Talent Radar & Snapshot Logic ---
+    # 1) Ensure g_tbl has 'name' attribute for extract_subnetwork()
+    library(tidygraph)
+    # Prepare igraph for extract_subnetwork
+    library(tidygraph)
+    g_tbl <- tbl_graph(nodes = nodes_tbl, edges = edges_tbl_graph, directed = TRUE) %>%
+      activate(nodes) %>%
+      mutate(name = node_name)
+    # convert to igraph object
+    g_igraph <- as.igraph(g_tbl)
+    
+    
+    # 2) Dynamic artist list by genre
+    available_artists <- reactive({
+      req(input$talent_genre)
+      song_ids <- nodes_tbl %>%
+        filter(genre %in% input$talent_genre, `Node Type` %in% c("Song","Album")) %>% pull(index)
+      artist_ids <- edges_tbl_graph %>%
+        filter(to %in% song_ids, `Edge Type` %in% person_edge_types) %>% pull(from) %>% unique()
+      nodes_tbl %>%
+        filter(index %in% artist_ids, `Node Type` == "Person") %>%
+        pull(node_name) %>% unique() %>% sort()
+    })
+    
+    # 3) Compare artists picker
+    output$select_compare_artists <- renderUI({
+      pickerInput("compare_artists", "🎯 Select Artists to Compare",
+                  choices = available_artists(),
+                  selected = head(available_artists(),2),
+                  multiple = TRUE,
+                  options = list(`actions-box` = TRUE, `max-options` = 5)
+      )
+    })
+    
+    # 4) Sync snapshot dropdown
+    observe({
+      updatePickerInput(
+        session, "snapshot_artist_detail",
+        choices = input$compare_artists,
+        selected = input$compare_artists[1]
+      )
+    })
+    
+    # 5) Compute weighted scores with Notable Works Count metric
+    weighted_scores <- reactive({
+      req(input$compare_artists)
+      # join base features
+      df <- talent_score_df %>%
+        left_join(nodes_tbl %>% distinct(node_name,index), by = c("label" = "node_name"), relationship = "many-to-many")
+      
+      # compute style similarity smoothing
+      song_ids <- nodes_tbl %>%
+        filter(genre %in% input$talent_genre, `Node Type` %in% c("Song","Album")) %>% pull(index)
+      sim_counts <- edges_tbl_graph %>%
+        filter(to %in% song_ids, `Edge Type` %in% person_edge_types) %>%
+        count(from, name = "sim_count")
+      
+      # compute notable works count
+      notable_ids <- nodes_tbl %>%
+        filter(`Node Type` %in% c("Song","Album"), notable == TRUE) %>% pull(index)
+      not_counts <- edges_tbl_graph %>%
+        filter(to %in% notable_ids, `Edge Type` %in% person_edge_types) %>%
+        count(from, name = "notable_count")
+      
+      df <- df %>%
+        left_join(sim_counts, by = c("index" = "from")) %>%
+        left_join(not_counts, by = c("index" = "from")) %>%
+        mutate(
+          sim_count = replace_na(sim_count, 0),
+          style_similarity = sim_count / (max(sim_count, 1) + 1),
+          notable_count = replace_na(notable_count, 0),
+          notable_count_norm = notable_count / (max(notable_count, 1))
+        )
+      
+      # normalize graph metrics
+      df <- df %>%
+        mutate(
+          degree_norm = scales::rescale(degree),
+          pagerank_norm = scales::rescale(pagerank)
+        )
+      
+      # apply custom weights
+      w_pr <- input$weight_pagerank
+      w_deg <- input$weight_degree
+      w_sim <- input$weight_similarity
+      w_not <- input$weight_notable_count
+      df <- df %>%
+        mutate(
+          weighted_score = pagerank_norm * w_pr +
+            degree_norm   * w_deg +
+            style_similarity * w_sim +
+            notable_count_norm * w_not
+        ) %>%
+        distinct(label, .keep_all = TRUE)
+      
+      df
+    })
+    
+    # 6) Scoreboard and Radar outputs
+    output$talent_score_table <- renderDT({
+      df <- weighted_scores() %>%
+        filter(label %in% input$compare_artists) %>%
+        select(
+          label,
+          PageRank         = pagerank_norm,
+          Degree            = degree_norm,
+          StyleSim          = style_similarity,
+          NotableCountNorm  = notable_count_norm,
+          Score             = weighted_score
+        )
+      datatable(df, options = list(pageLength = 5, scrollX = TRUE), rownames = FALSE)
+    })
+    
+    output$talent_radar_plot <- renderPlotly({
+      df <- weighted_scores() %>% filter(label %in% input$compare_artists)
+      
+      # **按雷达顺时针/逆时针顺序** 排好你要画的四个指标的次序
+      metrics <- c("degree_norm", "pagerank_norm", "notable_count_norm", "style_similarity")
+      labels  <- c("Degree",      "PageRank",      "NotableCount",      "StyleSim")
+      
+      p <- plot_ly(type = 'scatterpolar', mode = 'lines+markers')
+      
+      for(i in seq_len(nrow(df))) {
+        vals <- as.numeric(df[i, metrics])
+        # 把第一个值补到最后，闭合多边形
+        closed_vals  <- c(vals, vals[1])
+        closed_theta <- c(labels, labels[1])
+        
+        p <- p %>%
+          add_trace(
+            r     = closed_vals,
+            theta = closed_theta,
+            name  = df$label[i],
+            fill  = 'toself'        # 这会帮你把线条画成一个封闭面
+          )
+      }
+      
+      p %>%
+        layout(
+          polar = list(
+            radialaxis = list(visible = TRUE, range = c(0, 1))
+          )
+        )
+    })
+    
+    # 7) Download handler unchanged
+    output$download_weighted_scores <- downloadHandler(
+      filename=function(){paste0("talent_scores_",Sys.Date(),".csv")},
+      content=function(file){write.csv(weighted_scores(), file, row.names=FALSE)}
+    )
+    
+    # 8) Snapshot subgraph rendering with styled network (like Influence Analysis)
+    observeEvent(input$snapshot_artist_detail, {
+      req(input$snapshot_artist_detail)
+      # 1. Extract subnetwork using igraph
+      subg <- extract_subnetwork(
+        graph      = g_igraph,
+        node_name  = input$snapshot_artist_detail,
+        distance   = input$snap_network_depth,
+        direction  = "all",
+        edge_types = input$snap_edge_type,
+        node_types = input$snap_node_type
+      )
+      
+      # 2. Prepare nodes and edges for visNetwork
+      vs_nodes <- as_tibble(subg, active = "nodes") %>%
+        mutate(
+          id = index,
+          label = node_name,
+          group = `Node Type`,
+          title = paste0("<b>", node_name, "</b><br>Type: ", `Node Type`)
+        )
+      vs_edges <- as_tibble(subg, active = "edges") %>%
+        transmute(
+          from,
+          to,
+          edge_type = `Edge Type`,
+          label = `Edge Type`
+        )
+      
+      # 3. Style edges matching Influence Analysis
+      edge_colors <- c(
+        CoverOf            = "#e76f51",
+        ComposerOf         = "#457b9d",
+        DirectlySamples    = "#2a9d8f",
+        InStyleOf          = "#f4a261",
+        InterpolatesFrom   = "#9d4edd",
+        LyricalReferenceTo = "#ffb703",
+        LyricistOf         = "#219ebc",
+        MemberOf           = "#8ecae6",
+        PerformerOf        = "#e63946",
+        ProducerOf         = "#6a994e"
+      )
+      vs_edges <- vs_edges %>%
+        mutate(
+          color = edge_colors[edge_type],
+          width = 2,
+          arrows = "to"
+        )
+      
+      # 4. Render styled network
+      output$snapshot_influence_graph <- renderVisNetwork({
+        visNetwork(vs_nodes, vs_edges, width = "100%", height = "600px") %>%
+          visEdges(arrows = 'to', color = list(color = vs_edges$color), width = vs_edges$width) %>%
+          visOptions(highlightNearest = TRUE, nodesIdSelection = TRUE) %>%
+          visLegend(
+            position = 'right',
+            useGroups = TRUE,
+            addEdges = data.frame(
+              label = names(edge_colors),
+              color = unname(edge_colors)
+            )
+          ) %>%
+          visPhysics(solver = 'forceAtlas2Based') %>%
+          visLayout(randomSeed = 123)
+      })
+    })
+}
   
 # Run the app
 shinyApp(ui = ui, server = server)
