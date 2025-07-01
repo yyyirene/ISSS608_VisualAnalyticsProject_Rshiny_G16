@@ -730,47 +730,29 @@ ui <- dashboardPage(
                     solidHeader = TRUE,
                     status = "primary",
                     collapsible = TRUE,
-                    tabsetPanel(
-                      tabPanel("Trend Overview",
-                               fluidRow(
-                                 column(
-                                   width = 4,
-                                   pickerInput("trend_genre", "Select Genre(s)",
-                                               choices = unique(na.omit(nodes_tbl$genre)),
-                                               selected = "Oceanus Folk", multiple = TRUE,
-                                               options = list(`actions-box` = TRUE)),
-                                   dateRangeInput("trend_year_range", "Year Range",
-                                                  start = as.Date("2005-01-01"), end = as.Date("2025-12-31")),
-                                   checkboxGroupInput("trend_layers", "Show Layers",
-                                                      choices = c("Artist Count", "Song Count", "Newcomer Count"),
-                                                      selected = c("Artist Count", "Song Count")),
-                                   hr(),
-                                   checkboxInput("trend_entropy", "Show Genre Fusion Index (Entropy)", TRUE),
-                                   checkboxInput("highlight_peak", "Highlight Peak Years", TRUE),
-                                   downloadButton("download_trend_data", "📥 Export Trend Data")
-                                 ),
-                                 column(
-                                   width = 8,
-                                   tabsetPanel(
-                                     tabPanel("Stacked Area Chart", plotlyOutput("trend_area_plot", height = "500px")),
-                                     tabPanel("Yearly Heatmap", plotlyOutput("trend_heatmap", height = "500px"))
-                                   )
-                                 )
-                               )
-                      ),
-                      tabPanel("Genre Diffusion Map",
-                               fluidRow(
-                                 column(
-                                   width = 12,
-                                   h4("🎼 Style Diffusion Chord Diagram"),
-                                   plotlyOutput("chord_diffusion_plot", height = "600px")
-                                 )
-                               )
-                      ),
-                      tabPanel("Artist Spotlight",
-                               fluidRow(
-                                 column(width = 12, DTOutput("trend_artist_table"))
-                               )
+                    tabPanel("Trend Overview",
+                      fluidRow(
+                        column(
+                          width = 4,
+                          pickerInput("trend_genre", "Select Genre(s)",
+                                      choices = unique(na.omit(nodes_tbl$genre)),
+                                      selected = unique(na.omit(nodes_tbl$genre))[1], multiple = TRUE,
+                                      options = list(`actions-box` = TRUE)),
+                          sliderInput("trend_year_range", "Year Range",
+                                      min = 1983, max = 2038, value = c(2005, 2025), sep = ""),
+                          checkboxGroupInput("trend_layers", "Show Layers",
+                                             choices = c("Artist Count", "Song Count", "Newcomer Count"),
+                                             selected = c("Song Count")),
+                          hr(),
+                          downloadButton("download_trend_data", "📥 Export Trend Data")
+                        ),
+                        column(
+                          width = 8,
+                          tabsetPanel(
+                            tabPanel("Yearly Heatmap", plotlyOutput("trend_heatmap", height = "500px")),
+                            tabPanel("Cumulative Curve", plotlyOutput("trend_cumulative_plot", height = "500px"))
+                          )
+                        )
                       )
                     )
                   )
@@ -1455,6 +1437,124 @@ server <- function(input, output, session) {
         visLayout(randomSeed = 123)
     })
   })
+
+  # --- Trend Dashboard Server ---
+  filtered_trend <- reactive({
+    req(input$trend_genre, input$trend_year_range)
+    nodes <- nodes_tbl %>%
+      filter(
+        genre %in% input$trend_genre,
+        `Node Type` %in% c("Song", "Album"),
+        !is.na(release_date),
+        as.numeric(release_date) >= input$trend_year_range[1],
+        as.numeric(release_date) <= input$trend_year_range[2]
+      )
+    nodes
+  })
+
+  output$trend_heatmap <- renderPlotly({
+    data <- filtered_trend()
+    if (nrow(data) == 0) return(plotly_empty())
+    req(input$trend_layers)
+    layer <- input$trend_layers[1]
+    df <- data %>%
+      mutate(Year = as.numeric(release_date))
+    if (layer == "Song Count") {
+      df_sum <- df %>%
+        group_by(Year, genre) %>%
+        summarize(Count = n(), .groups = 'drop')
+      fill_label <- "Count"
+    } else if (layer == "Artist Count") {
+      df_sum <- df %>%
+        filter(!is.na(artist)) %>%
+        group_by(Year, genre, artist) %>%
+        summarize(n = 1, .groups = 'drop') %>%
+        group_by(Year, genre) %>%
+        summarize(Count = n_distinct(artist), .groups = 'drop')
+      fill_label <- "Artist Count"
+    } else if (layer == "Newcomer Count") {
+      df_sum <- df %>%
+        filter(!is.na(artist)) %>%
+        group_by(artist, genre) %>%
+        summarize(FirstYear = min(Year), .groups = 'drop') %>%
+        group_by(FirstYear, genre) %>%
+        summarize(Newcomers = n(), .groups = 'drop') %>%
+        arrange(FirstYear) %>%
+        group_by(genre) %>%
+        mutate(Cumulative = cumsum(Newcomers)) %>%
+        rename(Year = FirstYear)
+      fill_label <- "Newcomers"
+    }
+    years <- sort(unique(df_sum$Year))
+    breaks <- years[seq(1, length(years), by = 2)]
+    p <- ggplot(df_sum, aes(x = factor(Year), y = genre, fill = Count)) +
+      geom_tile() +
+      scale_fill_viridis_c() +
+      labs(x = "Year", y = "Genre", fill = fill_label) +
+      theme_minimal() +
+      theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+      scale_x_discrete(breaks = breaks)
+    ggplotly(p)
+  })
+
+  output$trend_cumulative_plot <- renderPlotly({
+    data <- filtered_trend()
+    if (nrow(data) == 0) return(plotly_empty())
+    req(input$trend_layers)
+    layer <- input$trend_layers[1]
+    df <- data %>%
+      mutate(Year = as.numeric(release_date))
+    if (layer == "Song Count") {
+      df_sum <- df %>%
+        group_by(Year, genre) %>%
+        summarize(Count = n(), .groups = 'drop') %>%
+        arrange(Year) %>%
+        group_by(genre) %>%
+        mutate(Cumulative = cumsum(Count))
+      p <- ggplot(df_sum, aes(x = Year, y = Cumulative, color = genre)) +
+        geom_line(size = 1.2) +
+        geom_point(size = 2) +
+        labs(x = "Year", y = "Cumulative Works", title = "Cumulative Number of Works") +
+        theme_minimal()
+    } else if (layer == "Artist Count") {
+      df_sum <- df %>%
+        filter(!is.na(artist)) %>%
+        group_by(Year, genre, artist) %>%
+        summarize(n = 1, .groups = 'drop') %>%
+        group_by(Year, genre) %>%
+        summarize(NewArtists = n_distinct(artist), .groups = 'drop') %>%
+        arrange(Year) %>%
+        group_by(genre) %>%
+        mutate(Cumulative = cumsum(NewArtists))
+      p <- ggplot(df_sum, aes(x = Year, y = Cumulative, color = genre)) +
+        geom_line(size = 1.2) +
+        geom_point(size = 2) +
+        labs(x = "Year", y = "Cumulative Artists", title = "Cumulative Number of Artists") +
+        theme_minimal()
+    } else if (layer == "Newcomer Count") {
+      df_sum <- df %>%
+        filter(!is.na(artist)) %>%
+        group_by(artist, genre) %>%
+        summarize(FirstYear = min(Year), .groups = 'drop') %>%
+        group_by(FirstYear, genre) %>%
+        summarize(Newcomers = n(), .groups = 'drop') %>%
+        arrange(FirstYear) %>%
+        group_by(genre) %>%
+        mutate(Cumulative = cumsum(Newcomers)) %>%
+        rename(Year = FirstYear)
+      p <- ggplot(df_sum, aes(x = Year, y = Cumulative, color = genre)) +
+        geom_line(size = 1.2) +
+        geom_point(size = 2) +
+        labs(x = "Year", y = "Cumulative Newcomers", title = "Cumulative Number of Newcomers") +
+        theme_minimal()
+    }
+    ggplotly(p)
+  })
+
+  output$download_trend_data <- downloadHandler(
+    filename=function(){paste0("trend_data_",Sys.Date(),".csv")},
+    content=function(file){write.csv(filtered_trend(), file, row.names=FALSE)}
+  )
 }
 
 # Run the app
