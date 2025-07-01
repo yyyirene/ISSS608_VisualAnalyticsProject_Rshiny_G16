@@ -413,7 +413,7 @@ ui <- dashboardPage(
                       ),
                       pickerInput(
                         inputId = "node_name",
-                        label = "Search Node Name",
+                        label = "Search Artists Name",
                         choices = sort(unique(nodes_subgraph$label)),
                         selected = NULL,
                         multiple = TRUE,
@@ -425,7 +425,7 @@ ui <- dashboardPage(
                         )
                       ),
                       helpText(tagList(
-                        "Note: Selecting a node will zoom in and highlight it in the network graph.",
+                        "Note: Selecting a node will zoom in and highlight it in the network graph & Only apply in network graph exploration.Tip: Click on a node to reveal more detailed information.",
                         tags$br(), "Tip: Click on a node to reveal more detailed information."
                       )),
                       pickerInput(
@@ -605,21 +605,27 @@ ui <- dashboardPage(
               tabsetPanel(
                 id = "talent_tabs",
                 type = "tabs",
+                selected = "Score Explorer",
                 
                 # --- Score Explorer Panel ---
                 tabPanel(
                   "Score Explorer",
                   fluidRow(
-                    # Controls
                     column(
                       width = 4,
                       pickerInput(
                         inputId = "talent_genre",
                         label = "Filter by Genre",
                         choices = unique(na.omit(nodes_tbl$genre)),
-                        selected = "Oceanus Folk",
+                        selected = unique(na.omit(nodes_tbl$genre))[1],
                         multiple = TRUE,
                         options = list(`actions-box` = TRUE, `live-search` = TRUE)
+                      ),
+                      selectInput(
+                        inputId = "talent_topN",
+                        label = "Show Top N Artists",
+                        choices = c("Top 5" = 5, "Top 10" = 10, "Top 15" = 15, "Top 20" = 20),
+                        selected = 5
                       ),
                       uiOutput("select_compare_artists"),
                       hr(),
@@ -629,19 +635,27 @@ ui <- dashboardPage(
                       sliderInput("weight_degree", "Degree Centrality", 0, 1, 0.2, 0.1),
                       helpText("Degree Centrality measures the number of direct connections an artist has."),
                       sliderInput("weight_similarity", "Style Similarity", 0, 1, 0.3, 0.1),
-                      helpText("Style Similarity reflects contributions to selected‐genre works."),
+                      helpText("Style Similarity reflects contributions to selected-genre works."),
                       sliderInput("weight_notable_count", "Notable Works Count", 0, 1, 0.2, 0.1),
                       helpText("Notable Works Count is the normalized count of an artist's works marked as notable."),
                       hr(),
+                      sliderInput(
+                        inputId = "talent_year_range",
+                        label = "Year Range",
+                        min = 2025,
+                        max = max(as.numeric(na.omit(nodes_tbl$release_date)), na.rm = TRUE),
+                        value = c(2025, max(as.numeric(na.omit(nodes_tbl$release_date)), na.rm = TRUE)),
+                        step = 1,
+                        sep = ""
+                      ),
                       downloadButton("download_weighted_scores", "📥 Download CSV")
                     ),
-                    
-                    # Outputs
                     column(
                       width = 8,
                       tabsetPanel(
-                        tabPanel("Radar Comparison", plotlyOutput("talent_radar_plot", height = "550px")),
-                        tabPanel("Scoreboard", DTOutput("talent_score_table"))
+                        selected = "Scoreboard",
+                        tabPanel("Scoreboard", DTOutput("talent_score_table")),
+                        tabPanel("Radar Comparison", plotlyOutput("talent_radar_plot", height = "550px"))
                       )
                     )
                   )
@@ -1195,23 +1209,37 @@ server <- function(input, output, session) {
   
   # 2) Dynamic artist list by genre
   available_artists <- reactive({
-    req(input$talent_genre)
+    req(input$talent_genre, input$talent_year_range)
+    year_range <- input$talent_year_range
     song_ids <- nodes_tbl %>%
-      filter(genre %in% input$talent_genre, `Node Type` %in% c("Song","Album")) %>% pull(index)
+      filter(
+        genre %in% input$talent_genre,
+        `Node Type` %in% c("Song", "Album"),
+        !is.na(release_date),
+        as.numeric(release_date) >= year_range[1],
+        as.numeric(release_date) <= year_range[2]
+      ) %>% pull(index)
     artist_ids <- edges_tbl_graph %>%
       filter(to %in% song_ids, `Edge Type` %in% person_edge_types) %>% pull(from) %>% unique()
-    nodes_tbl %>%
-      filter(index %in% artist_ids, `Node Type` == "Person") %>%
-      pull(node_name) %>% unique() %>% sort()
+    topN <- as.numeric(input$talent_topN)
+    top_artists <- weighted_scores() %>%
+      filter(label %in% (nodes_tbl %>% filter(index %in% artist_ids, `Node Type` == "Person") %>% pull(node_name))) %>%
+      filter(label != "Sailor Shift") %>%  # 排除Sailor Shift
+      arrange(desc(weighted_score)) %>%
+      pull(label) %>%
+      head(topN)
+    if (length(top_artists) == 0) return("无艺术家")
+    top_artists
   })
   
   # 3) Compare artists picker
   output$select_compare_artists <- renderUI({
+    choices <- available_artists()
     pickerInput("compare_artists", "🎯 Select Artists to Compare",
-                choices = available_artists(),
-                selected = head(available_artists(),2),
+                choices = choices,
+                selected = if(length(choices) >= 2) head(choices, 2) else choices,
                 multiple = TRUE,
-                options = list(`actions-box` = TRUE, `max-options` = 5)
+                options = list(`actions-box` = TRUE, `max-options` = as.numeric(input$talent_topN))
     )
   })
   
@@ -1226,25 +1254,25 @@ server <- function(input, output, session) {
   
   # 5) Compute weighted scores with Notable Works Count metric
   weighted_scores <- reactive({
-    req(input$compare_artists)
-    # join base features
+    year_range <- input$talent_year_range
     df <- talent_score_df %>%
       left_join(nodes_tbl %>% distinct(node_name,index), by = c("label" = "node_name"), relationship = "many-to-many")
-    
-    # compute style similarity smoothing
     song_ids <- nodes_tbl %>%
-      filter(genre %in% input$talent_genre, `Node Type` %in% c("Song","Album")) %>% pull(index)
+      filter(
+        genre %in% input$talent_genre,
+        `Node Type` %in% c("Song", "Album"),
+        !is.na(release_date),
+        as.numeric(release_date) >= year_range[1],
+        as.numeric(release_date) <= year_range[2]
+      ) %>% pull(index)
     sim_counts <- edges_tbl_graph %>%
       filter(to %in% song_ids, `Edge Type` %in% person_edge_types) %>%
       count(from, name = "sim_count")
-    
-    # compute notable works count
     notable_ids <- nodes_tbl %>%
-      filter(`Node Type` %in% c("Song","Album"), notable == TRUE) %>% pull(index)
+      filter(`Node Type` %in% c("Song", "Album"), notable == TRUE, !is.na(release_date), as.numeric(release_date) >= year_range[1], as.numeric(release_date) <= year_range[2]) %>% pull(index)
     not_counts <- edges_tbl_graph %>%
       filter(to %in% notable_ids, `Edge Type` %in% person_edge_types) %>%
       count(from, name = "notable_count")
-    
     df <- df %>%
       left_join(sim_counts, by = c("index" = "from")) %>%
       left_join(not_counts, by = c("index" = "from")) %>%
@@ -1254,15 +1282,11 @@ server <- function(input, output, session) {
         notable_count = replace_na(notable_count, 0),
         notable_count_norm = notable_count / (max(notable_count, 1))
       )
-    
-    # normalize graph metrics
     df <- df %>%
       mutate(
         degree_norm = scales::rescale(degree),
         pagerank_norm = scales::rescale(pagerank)
       )
-    
-    # apply custom weights
     w_pr <- input$weight_pagerank
     w_deg <- input$weight_degree
     w_sim <- input$weight_similarity
@@ -1275,49 +1299,82 @@ server <- function(input, output, session) {
           notable_count_norm * w_not
       ) %>%
       distinct(label, .keep_all = TRUE)
-    
     df
   })
   
   # 6) Scoreboard and Radar outputs
   output$talent_score_table <- renderDT({
     df <- weighted_scores() %>%
-      filter(label %in% input$compare_artists) %>%
-      select(
-        label,
-        PageRank         = pagerank_norm,
-        Degree            = degree_norm,
-        StyleSim          = style_similarity,
-        NotableCountNorm  = notable_count_norm,
-        Score             = weighted_score
+      filter(label %in% available_artists()) %>%
+      arrange(desc(weighted_score)) %>%
+      mutate(
+        PageRank = round(pagerank_norm, 2),
+        Degree = round(degree_norm, 2),
+        StyleSim = round(style_similarity, 2),
+        NotableCountNorm = round(notable_count_norm, 2),
+        Score = round(weighted_score, 2)
+      ) %>%
+      select(label, PageRank, Degree, StyleSim, NotableCountNorm, Score)
+    if(nrow(df) == 0 || (nrow(df) == 1 && df$label[1] == "无艺术家")) {
+      datatable(data.frame(提示 = "无数据可显示"), options = list(dom = 't'))
+    } else {
+      datatable(
+        df,
+        options = list(
+          pageLength = 25,
+          scrollX = TRUE,
+          rowCallback = JS(
+            'function(row, data) {',
+            'if(data[0] == "Sailor Shift"){',
+            '  $(row).css("background-color", "#FFFACD");',
+            '}',
+            '}'
+          )
+        ),
+        rownames = FALSE
       )
-    datatable(df, options = list(pageLength = 5, scrollX = TRUE), rownames = FALSE)
+    }
   })
   
   output$talent_radar_plot <- renderPlotly({
-    df <- weighted_scores() %>% filter(label %in% input$compare_artists)
-    
-    
+    selected <- input$compare_artists
+    selected <- selected[!is.na(selected) & selected != ""]
+    all_labels <- unique(c("Sailor Shift", selected))
+    df <- weighted_scores() %>% filter(label %in% all_labels, !is.na(label), label != "")
+    if(nrow(df) == 0 || (nrow(df) == 1 && df$label[1] == "无艺术家")) return(plotly_empty())
     metrics <- c("degree_norm", "pagerank_norm", "notable_count_norm", "style_similarity")
     labels  <- c("Degree",      "PageRank",      "NotableCount",      "StyleSim")
-    
     p <- plot_ly(type = 'scatterpolar', mode = 'lines+markers')
-    
     for(i in seq_len(nrow(df))) {
       vals <- as.numeric(df[i, metrics])
-      # 把第一个值补到最后，闭合多边形
       closed_vals  <- c(vals, vals[1])
       closed_theta <- c(labels, labels[1])
-      
-      p <- p %>%
-        add_trace(
-          r     = closed_vals,
-          theta = closed_theta,
-          name  = df$label[i],
-          fill  = 'toself'        
-        )
+      is_sailor <- df$label[i] == "Sailor Shift"
+      if (is_sailor) {
+        p <- p %>%
+          add_trace(
+            r     = closed_vals,
+            theta = closed_theta,
+            name  = df$label[i],
+            fill  = 'toself',
+            line  = list(color = "#FF9999", width = 4),
+            marker = list(color = "#FF9999", size = 10),
+            legendgroup = "Sailor Shift",
+            showlegend = TRUE
+          )
+      } else {
+        p <- p %>%
+          add_trace(
+            r     = closed_vals,
+            theta = closed_theta,
+            name  = df$label[i],
+            fill  = 'toself',
+            line  = list(width = 2),
+            marker = list(size = 6),
+            showlegend = TRUE
+          )
+      }
     }
-    
     p %>%
       layout(
         polar = list(
