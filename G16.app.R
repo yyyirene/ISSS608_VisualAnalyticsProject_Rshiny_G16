@@ -384,18 +384,7 @@ ui <- dashboardPage(
               # ===== Tab 1: Influenced by =====
               tabPanel(
                 "Influenced by",
-                div(
-                  style = "padding: 20px; background-color: #f8f9fa; border-radius: 5px;",
-                  h2("Who has Sailor Shift been influenced by?"),
-                  br(),
-                  p("To visualize the influence on Sailor Shift, we explored both direct and indirect connections,
-              along with how these evolved over time. The visual analysis process followed three key steps:"),
-                  tags$ol(
-                    tags$li("Identify the individuals who directly influenced her."),
-                    tags$li("Examine the works created by Sailor Shift, and trace any indirect influences on these works from others."),
-                    tags$li("Apply a timeline to analyze how these influences evolved over time and observe any trends in their impact.")
-                  )
-                ),
+                
                 
                 br(),
                 
@@ -425,8 +414,9 @@ ui <- dashboardPage(
                         )
                       ),
                       helpText(tagList(
-                        "Note: Selecting a node will zoom in and highlight it in the network graph & Only apply in network graph exploration.Tip: Click on a node to reveal more detailed information.",
-                        tags$br(), "Tip: Click on a node to reveal more detailed information."
+                        "Note: Selecting a node will zoom in and highlight it in the network graph & Only apply in network graph exploration.
+                        Tip: Click on a node to reveal more detailed information.",
+                       
                       )),
                       pickerInput(
                         inputId = "edge_type",
@@ -504,37 +494,12 @@ ui <- dashboardPage(
               # ===== Tab 2: Her Impact & Collaborators =====
               tabPanel(
                 "Her Impact & Collaborators",
-                div(
-                  style = "padding: 20px; background-color: #f8f9fa; border-radius: 5px;",
-                  h2("Who has she collaborated with and directly or indirectly influenced?"),
-                  br(),
-                  p("To explore who Sailor Shift has collaborated with and whom she has directly or indirectly influenced, 
-              we centered our analysis around her role in the Oceanus Folk network."),
-                  tags$ol(
-                    tags$li("Analyze the network to determine who has been influenced by her work, both directly and indirectly."),
-                    tags$li("Identify key collaborators who worked directly with Sailor Shift."),
-                    tags$li("Visualize the evolution and spread of her impact over time.")
-                  )
-                )
+
               ), # End Tab 2
               
               # ===== Tab 3: Community Influence =====
               tabPanel(
                 "Community Influence",
-                div(
-                  style = "padding: 20px; background-color: #f8f9fa; border-radius: 5px;",
-                  h2("Her Influence on the Oceanus Folk Community"),
-                  br(),
-                  p("Based on the network results, Copper Canyon Ghosts is identified as an Oceanus Folk band."),
-                  p("To address the third analytical question — ",
-                    tags$b("How has Sailor Shift influenced collaborators within the broader Oceanus Folk community?"),
-                    " — we explore both direct and indirect influence paths."),
-                  tags$ol(
-                    tags$li("Identify all artists and groups influenced by Sailor Shift."),
-                    tags$li("Filter those belonging to the Oceanus Folk genre using the 'genre' field."),
-                    tags$li("Trace both direct and second-level indirect influence paths from Sailor Shift to Oceanus Folk collaborators.")
-                  )
-                )
               ) # End Tab 3
               
             ) # End tabBox
@@ -708,7 +673,7 @@ ui <- dashboardPage(
                     ),
                     mainPanel(
                       h4("Artist Influence Subgraph"),
-                      visNetworkOutput("snapshot_influence_graph", height = "600px")
+                      visNetworkOutput("snapshot_influence_graph", height = "1000px")
                     )
                   )
                 )  # end Artist Snapshots
@@ -1017,13 +982,7 @@ server <- function(input, output, session) {
   
   output$barInfo <- renderPrint({
     click_data <- event_data("plotly_click")
-    if (is.null(click_data)) {
-      "Tips : Click on a bar segment to see details"
-    } else {
-      paste0("You clicked on:\nNode Type: ", click_data$x, 
-             "\nCount: ", click_data$y, 
-             "\nEdge Type: ", click_data$curveNumber + 1)  # 仅近似展示
-    }
+    
   })
   
   # ------------- Genre Diffusion Tracker Sever Part -----------------
