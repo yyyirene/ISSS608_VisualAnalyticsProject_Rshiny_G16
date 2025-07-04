@@ -372,14 +372,15 @@ ui <- dashboardPage(
       
       tabItem(
         tabName = "influenced",
+        fluidPage(
         fluidRow(
-          column(
+          box(
+            title = "Sailor Shift Influence Analysis",
             width = 12,
-            tabBox(
-              id = "influence_tabs",
-              title = "Sailor Shift Influence Analysis",
-              width = 12,
-              side = "left",
+            solidHeader = TRUE,
+            status = "primary",
+            collapsible = TRUE,
+            tabsetPanel(
               
               # ===== Tab 1: Influenced by =====
               tabPanel(
@@ -502,9 +503,12 @@ ui <- dashboardPage(
                 "Community Influence",
               ) # End Tab 3
               
-            ) # End tabBox
-          ) # End column
+           
+          
         ) # End fluidRow
+        ) #BOX
+        )#tabsetpanel
+        ) #FLUIDPAGE
       ), # End tabItem "influenced"
       
       
@@ -925,18 +929,16 @@ server <- function(input, output, session) {
       datatable(data.frame(Message = "No data to display"), options = list(dom = 't'))
     }
   })
-  
   output$groupEdgeBarPlot <- renderPlotly({
     req(filtered_edges(), filtered_nodes())
     
     edge_df <- filtered_edges()
     node_df <- filtered_nodes()
     
-    
     node_df <- node_df %>%
       filter(
         input$notable_filter == "All" |
-          (input$notable_filter == "TRUE"  & notable == TRUE) |
+          (input$notable_filter == "TRUE" & notable == TRUE) |
           (input$notable_filter == "FALSE" & (is.na(notable) | notable == FALSE))
       )
     
@@ -962,6 +964,23 @@ server <- function(input, output, session) {
       "Count: ", summary_df$n
     )
     
+    # 对 edge_type 排序
+    edge_order <- summary_df %>%
+      group_by(edge_type) %>%
+      summarise(total = sum(n)) %>%
+      arrange(desc(total)) %>%
+      pull(edge_type)
+    summary_df$edge_type <- factor(summary_df$edge_type, levels = edge_order)
+    
+    # 对 node_type 排序
+    node_order <- summary_df %>%
+      group_by(node_type) %>%
+      summarise(total = sum(n)) %>%
+      arrange(desc(total)) %>%
+      pull(node_type)
+    summary_df$node_type <- factor(summary_df$node_type, levels = node_order)
+    
+    # 绘图
     p <- ggplot(summary_df, aes(x = node_type, y = n, fill = edge_type, text = label)) +
       geom_bar(stat = "identity") +
       labs(
@@ -971,12 +990,16 @@ server <- function(input, output, session) {
         fill = "Edge Type"
       ) +
       theme_minimal() +
-      theme(axis.text.x = element_text(hjust = 1))
+      theme(
+        axis.text.x = element_text(hjust = 1),
+        legend.position = "bottom"
+      )
     
     ggplotly(p, tooltip = "text") %>%
-      layout(hoverlabel = list(
-        font = list(color = "white")
-      ))
+      layout(
+        hoverlabel = list(font = list(color = "white")),
+        legend = list(orientation = "h", x = 0.5, y = -0.3, xanchor = "center")
+      )
   })
   
   
@@ -1127,6 +1150,8 @@ server <- function(input, output, session) {
     )
     
   })
+  
+ 
   
   # Detail panel: show node details upon selection
   output$detailPanel <- renderUI({
