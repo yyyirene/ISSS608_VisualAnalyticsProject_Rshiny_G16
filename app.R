@@ -7,9 +7,6 @@
 #
 # shinydashboard
 library(shiny)
-
-# Add resource path for PDF file
-addResourcePath("pdfs", "www")
 library(shinydashboard)
 library(dplyr)
 library(DT)
@@ -19,12 +16,8 @@ library(shinyWidgets)
 library(lubridate)
 library(ggplot2)
 library(plotly)
-library(jsonlite)
-library(dplyr)
 library(networkD3)
 library(igraph)
-library(jsonlite)
-library(dplyr)
 library(tidygraph)
 library(tibble)
 library(webshot2)
@@ -32,6 +25,9 @@ library(htmlwidgets)
 library(circlize)
 library(scales)
 library(reshape2)
+library(tidyverse)  # 如果用 tidyverse，可以省略 dplyr/ggplot2/tibble/purrr 等单独加载
+library(rlang)
+library(purrr)
 #——————————————————————————————————influence graph data preparation————————————————————————————————————
 
 kg <- fromJSON("data/MC1_graph.json")
@@ -236,8 +232,8 @@ edges_subgraph <- all_edges %>%
 
 
 
-min_year <- 1983
-max_year <- 2038
+min_year <- min(as.numeric(all_nodes$release_date), na.rm = TRUE)
+max_year <- max(as.numeric(all_nodes$release_date), na.rm = TRUE)
 # —————————————————————————————————— her impact on others   ——————————————————————————————————
 
 # ———————————————————————————————————————————————————————————————————————————————
@@ -263,15 +259,17 @@ used_nodes <- unique(c(edges_vn$from, edges_vn$to))
 
 nodes_vn <- nodes_vn %>% filter(id %in% used_nodes)
 
-node_colors <- c(
-  "Person" = "#457b9d",
-  "Song" = "#e76f51",
-  "Album" = "#f4a261",
-  "MusicalGroup" = "#2a9d8f",
-  "RecordLabel" = "#9d4edd"
+# 统一 network 节点颜色（含填充和边框）
+node_colors <- list(
+  Person = list(fill = "#A5C9FF", border = "#1F75FE"),
+  Album = list(fill = "#F26C6C", border = "#FF0000"),
+  Song = list(fill = "#FFFF00", border = "#FFA500"),
+  MusicalGroup = list(fill = "#6BDC37", border = "#008000"),
+  RecordLabel = list(fill = "#F279F2", border = "#C000C0")
 )
 nodes_vn <- nodes_vn %>%
-  mutate(color = node_colors[group])
+  mutate(color.background = unname(sapply(group, function(g) node_colors[[g]]$fill)),
+         color.border = unname(sapply(group, function(g) node_colors[[g]]$border)))
 
 # —————————————————————————————————— tab 3 community influence   ——————————————————————————————————
 
@@ -333,7 +331,6 @@ nodes_vn <- nodes_tbl %>%
     id = index,
     label = name,
     group = `Node Type`,
-    color.background = ifelse(name == "Sailor Shift", "yellow", NA), 
     shape = ifelse(name == "Sailor Shift", "star", "dot")
   )
 
@@ -376,48 +373,6 @@ edges_final <- bind_rows(
   edges_vn_sailor,
   forced_edge_ids
 )
-
-# —————————————————————————————————— Genre Diffusion Tracker: Data Preparation ——————————————————————————————————
-
-processedData <- reactive({
-  # 原始数据读取
-  graph_data <- jsonlite::fromJSON("data/MC1_graph.json")
-  nodes_df <- as.data.frame(graph_data$nodes)
-  edges_df <- as.data.frame(graph_data$links)
-  
-  # 过滤合法节点
-  nodes <- nodes_df %>%
-    dplyr::filter(`Node Type` %in% c("Song", "Album"), !is.na(genre))
-  
-  # 加入年份过滤（可选：假设你定义了 input$yearRange）
-  if (!is.null(input$yearRange)) {
-    nodes <- nodes %>%
-      dplyr::filter(
-        !is.na(release_date),
-        as.numeric(release_date) >= input$yearRange[1],
-        as.numeric(release_date) <= input$yearRange[2]
-      )
-  }
-  
-  # enrich edge with genre info
-  edges <- edges_df %>%
-    dplyr::left_join(nodes %>% dplyr::select(id, source_genre = genre), by = c("source" = "id")) %>%
-    dplyr::left_join(nodes %>% dplyr::select(id, target_genre = genre), by = c("target" = "id"))
-  
-  # genre-genre frequency for chord diagram
-  chord_df <- edges %>%
-    dplyr::filter(!is.na(source_genre), !is.na(target_genre)) %>%
-    dplyr::group_by(source_genre, target_genre) %>%
-    dplyr::summarize(value = n(), .groups = "drop")
-  
-  genre_matrix <- reshape2::acast(chord_df, source_genre ~ target_genre, value.var = "value", fill = 0)
-  
-  list(
-    genre_matrix = genre_matrix,
-    nodes = nodes,
-    edges = edges
-  )
-})
 
 # —————————————————————————————————— Talent Radar Module 3: Data Preparation ——————————————————————————————————
 
@@ -576,14 +531,6 @@ ui <- dashboardPage(
             </div>
           ')
           )
-        ),
-        fluidRow(
-          tags$iframe(
-            src = "pdfs/EchoScope_R_Shiny_App_User_Guide.pdf",
-            width = "100%",
-            height = "800px",
-            style = "border: none;"
-          )
         )
       ),  #end home info
       
@@ -607,8 +554,8 @@ ui <- dashboardPage(
                   
                   fluidRow(
                     column(
-                      width = 4,
-                      wellPanel(
+                      width = 3,
+                      
                         pickerInput(
                           inputId = "node_type",
                           label = "Select Node Type",
@@ -616,8 +563,8 @@ ui <- dashboardPage(
                           selected = unique(nodes_subgraph$group),
                           multiple = TRUE,
                           options = list(`actions-box` = TRUE, `live-search` = TRUE)
-                        ),
-                        pickerInput(
+                        ), 
+                        pickerInput( 
                           inputId = "node_name",
                           label = "Search Artists Name",
                           choices = sort(unique(nodes_subgraph$label)),
@@ -631,7 +578,7 @@ ui <- dashboardPage(
                           )
                         ),
                         helpText(tagList(
-                          "Note: Selecting a node will zoom in and highlight it in the network graph & Only apply in network graph exploration.
+                          "Note: Selecting a node will zoom in and highlight it in the network graph.
                         Tip: Click on a node to reveal more detailed information.",
                           
                         )),
@@ -659,27 +606,84 @@ ui <- dashboardPage(
                           options = list(`actions-box` = TRUE)
                         ),
                         sliderInput("release_range", "Release Year Range",
-                                    min = 1983, max = 2038,
-                                    value = c(min_year, max_year), step = 1, sep = ""
+                                    min = 1983, max = 2040,
+                                    value = c(1983, 2040), step = 1, sep = ""
                         ),
-                        actionButton("release_range_btn", "Select All Years"),
-                        helpText("Note: Selecting all years might take a moment. Thanks for your patience."),
+                        
                         sliderInput("network_depth", "Select Network Depth (Layers from Sailor Shift)",
                                     min = 1, max = 3, value = 2, step = 1,
                                     ticks = TRUE, animate = TRUE
-                        ),
-                        actionButton("network_depth_btn", "Select All Network"),
-                        helpText("Note: Selecting all Network Depths might take a moment. Thanks for your patience.")
-                      )
+                        )
+                        
+                      
                     ),
                     
                     column(
-                      width = 8,
+                      width = 9,
                       tabsetPanel(
                         id = "graph_tabs",
                         type = "tabs",
                         tabPanel("Influence Network",
-                                 visNetworkOutput("directGraph", height = "725px")),
+                          fluidRow(
+                            column(
+                              width = 10,
+                              visNetworkOutput("directGraph", height = "650px")
+                            ),
+                            column(
+                              width = 2,
+                              tags$div(
+                                style = "padding: 0px; margin-top: 20px; font-size: 10px;",  # 去掉背景和边框，字体更小
+                                h4("Node Legend", style = "font-size: 12px; font-weight: bold; margin-bottom: 8px;"),
+                                tags$div(style="margin-bottom:4px;",
+                                  tags$span(style="display:inline-block;width:16px;height:16px;background:#A5C9FF;border:2px solid #1F75FE;margin-right:6px;border-radius:50%;"), "Person"
+                                ),
+                                tags$div(style="margin-bottom:4px;",
+                                  tags$span(style="display:inline-block;width:16px;height:16px;background:#FFFF00;border:2px solid #FFA500;margin-right:6px;border-radius:50%;"), "Song"
+                                ),
+                                tags$div(style="margin-bottom:4px;",
+                                  tags$span(style="display:inline-block;width:16px;height:16px;background:#F26C6C;border:2px solid #FF0000;margin-right:6px;border-radius:50%;"), "Album"
+                                ),
+                                tags$div(style="margin-bottom:4px;",
+                                  tags$span(style="display:inline-block;width:16px;height:16px;background:#6BDC37;border:2px solid #008000;margin-right:6px;border-radius:50%;"), "MusicalGroup"
+                                ),
+                                tags$div(style="margin-bottom:4px;",
+                                  tags$span(style="display:inline-block;width:16px;height:16px;background:#F279F2;border:2px solid #C000C0;margin-right:6px;border-radius:50%;"), "RecordLabel"
+                                ),
+                                h4("Edge Legend", style = "font-size: 12px; font-weight: bold; margin-bottom: 8px; margin-top: 10px;"),
+                                tags$div(style="margin-bottom:4px;",
+                                  tags$span(style="display:inline-block;width:20px;height:3px;background:#e76f51;margin-right:6px;vertical-align:middle;"), "CoverOf"
+                                ),
+                                tags$div(style="margin-bottom:4px;",
+                                  tags$span(style="display:inline-block;width:20px;height:3px;background:#457b9d;margin-right:6px;vertical-align:middle;"), "ComposerOf"
+                                ),
+                                tags$div(style="margin-bottom:4px;",
+                                  tags$span(style="display:inline-block;width:20px;height:3px;background:#2a9d8f;margin-right:6px;vertical-align:middle;"), "DirectlySamples"
+                                ),
+                                tags$div(style="margin-bottom:4px;",
+                                  tags$span(style="display:inline-block;width:20px;height:3px;background:#f4a261;margin-right:6px;vertical-align:middle;"), "InStyleOf"
+                                ),
+                                tags$div(style="margin-bottom:4px;",
+                                  tags$span(style="display:inline-block;width:20px;height:3px;background:#9d4edd;margin-right:6px;vertical-align:middle;"), "InterpolatesFrom"
+                                ),
+                                tags$div(style="margin-bottom:4px;",
+                                  tags$span(style="display:inline-block;width:20px;height:3px;background:#ffb703;margin-right:6px;vertical-align:middle;"), "LyricalReferenceTo"
+                                ),
+                                tags$div(style="margin-bottom:4px;",
+                                  tags$span(style="display:inline-block;width:20px;height:3px;background:#219ebc;margin-right:6px;vertical-align:middle;"), "LyricistOf"
+                                ),
+                                tags$div(style="margin-bottom:4px;",
+                                  tags$span(style="display:inline-block;width:20px;height:3px;background:#8ecae6;margin-right:6px;vertical-align:middle;"), "MemberOf"
+                                ),
+                                tags$div(style="margin-bottom:4px;",
+                                  tags$span(style="display:inline-block;width:20px;height:3px;background:#e63946;margin-right:6px;vertical-align:middle;"), "PerformerOf"
+                                ),
+                                tags$div(style="margin-bottom:4px;",
+                                  tags$span(style="display:inline-block;width:20px;height:3px;background:#6a994e;margin-right:6px;vertical-align:middle;"), "ProducerOf"
+                                )
+                              )
+                            )
+                          )
+                        ),
                         tabPanel("Summary Statistics",
                                  fluidRow(
                                    column(
@@ -710,15 +714,16 @@ ui <- dashboardPage(
                 
                 # ===== Tab 2: Her Impact & Collaborators =====
                 tabPanel(
-                  "Her Impact & Collaborators",
+                  "Her Impact",
                   
                   br(),
-                  
+                
                   fluidRow(
                     column(
-                      width = 4,
-                      wellPanel(
-                        h4("Impact Analysis Controls"),
+                      width = 3,
+                     
+                  
+                      
                         pickerInput(
                           inputId = "impact_node_type",
                           label = "Select Node Type",
@@ -735,79 +740,86 @@ ui <- dashboardPage(
                           multiple = TRUE,
                           options = list(`actions-box` = TRUE, `live-search` = TRUE)
                         ),
-                        radioButtons(
-                          inputId = "impact_direction",
-                          label = "Impact Direction",
-                          choices = c("Outgoing (Her Impact)" = "out", "Incoming (Influenced by)" = "in"),
-                          selected = "out",
-                          inline = TRUE
-                        ),
                         sliderInput(
                           inputId = "impact_depth",
                           label = "Network Depth",
-                          min = 1, max = 3, value = 2, step = 1,
+                          min = 1, max = 2, value = 1, step = 1,
                           ticks = TRUE, animate = TRUE
-                        ),
-                        hr(),
-                        h4("Collaboration Filters"),
-                        pickerInput(
-                          inputId = "collaborator_type",
-                          label = "Collaborator Type",
-                          choices = c("PerformerOf", "ComposerOf", "LyricistOf", "ProducerOf", "MemberOf"),
-                          selected = c("PerformerOf", "ComposerOf", "LyricistOf", "ProducerOf"),
-                          multiple = TRUE,
-                          options = list(`actions-box` = TRUE, `live-search` = TRUE)
-                        ),
-                        sliderInput(
-                          inputId = "collab_year_range",
-                          label = "Collaboration Year Range",
-                          min = 1983, max = 2038,
-                          value = c(2000, 2025), step = 1, sep = ""
-                        ),
+                        )
+                       
                        
                     
-                      )
+                      
                     ),
                     
                     column(
-                      width = 8,
+                      width = 9,
                       tabsetPanel(
                         id = "impact_tabs",
                         type = "tabs",
                         tabPanel("Impact Network",
-                                 visNetworkOutput("impactNetwork", height = "600px")),
-                        tabPanel("Collaboration Timeline",
-                                 plotlyOutput("collabTimeline", height = "600px")),
-                        tabPanel("Genre Impact Analysis",
                           fluidRow(
-                            column(width = 6,
-                              h4("Impact by Genre", style = "margin-top:10px;"),
-                              plotlyOutput("genreImpactChart", height = "320px")
+                            column(
+                              width = 10,
+                              visNetworkOutput("impactNetwork", height = "600px")
                             ),
-                            column(width = 6,
-                              h4("Influence Types", style = "margin-top:10px;"),
-                              plotlyOutput("influenceStrengthChart", height = "320px")
+                            column(
+                              width = 2,
+                              tags$div(
+                                style = "padding: 0px; margin-top: 20px; font-size: 10px;",  # 去掉背景和边框，字体更小
+                                h4("Node Legend", style = "font-size: 12px; font-weight: bold; margin-bottom: 8px;"),
+                                tags$div(style="margin-bottom:4px;",
+                                  tags$span(style="display:inline-block;width:16px;height:16px;background:#A5C9FF;border:2px solid #1F75FE;margin-right:6px;border-radius:50%;"), "Person"
+                                ),
+                                tags$div(style="margin-bottom:4px;",
+                                  tags$span(style="display:inline-block;width:16px;height:16px;background:#FFFF00;border:2px solid #FFA500;margin-right:6px;border-radius:50%;"), "Song"
+                                ),
+                                tags$div(style="margin-bottom:4px;",
+                                  tags$span(style="display:inline-block;width:16px;height:16px;background:#F26C6C;border:2px solid #FF0000;margin-right:6px;border-radius:50%;"), "Album"
+                                ),
+                                tags$div(style="margin-bottom:4px;",
+                                  tags$span(style="display:inline-block;width:16px;height:16px;background:#6BDC37;border:2px solid #008000;margin-right:6px;border-radius:50%;"), "MusicalGroup"
+                                ),
+                                tags$div(style="margin-bottom:4px;",
+                                  tags$span(style="display:inline-block;width:16px;height:16px;background:#F279F2;border:2px solid #C000C0;margin-right:6px;border-radius:50%;"), "RecordLabel"
+                                ),
+                                h4("Edge Legend", style = "font-size: 12px; font-weight: bold; margin-bottom: 8px; margin-top: 10px;"),
+                                tags$div(style="margin-bottom:4px;",
+                                  tags$span(style="display:inline-block;width:20px;height:3px;background:#e76f51;margin-right:6px;vertical-align:middle;"), "CoverOf"
+                                ),
+                                tags$div(style="margin-bottom:4px;",
+                                  tags$span(style="display:inline-block;width:20px;height:3px;background:#457b9d;margin-right:6px;vertical-align:middle;"), "ComposerOf"
+                                ),
+                                tags$div(style="margin-bottom:4px;",
+                                  tags$span(style="display:inline-block;width:20px;height:3px;background:#2a9d8f;margin-right:6px;vertical-align:middle;"), "DirectlySamples"
+                                ),
+                                tags$div(style="margin-bottom:4px;",
+                                  tags$span(style="display:inline-block;width:20px;height:3px;background:#f4a261;margin-right:6px;vertical-align:middle;"), "InStyleOf"
+                                ),
+                                tags$div(style="margin-bottom:4px;",
+                                  tags$span(style="display:inline-block;width:20px;height:3px;background:#9d4edd;margin-right:6px;vertical-align:middle;"), "InterpolatesFrom"
+                                ),
+                                tags$div(style="margin-bottom:4px;",
+                                  tags$span(style="display:inline-block;width:20px;height:3px;background:#ffb703;margin-right:6px;vertical-align:middle;"), "LyricalReferenceTo"
+                                ),
+                                tags$div(style="margin-bottom:4px;",
+                                  tags$span(style="display:inline-block;width:20px;height:3px;background:#219ebc;margin-right:6px;vertical-align:middle;"), "LyricistOf"
+                                ),
+                                tags$div(style="margin-bottom:4px;",
+                                  tags$span(style="display:inline-block;width:20px;height:3px;background:#8ecae6;margin-right:6px;vertical-align:middle;"), "MemberOf"
+                                ),
+                                tags$div(style="margin-bottom:4px;",
+                                  tags$span(style="display:inline-block;width:20px;height:3px;background:#e63946;margin-right:6px;vertical-align:middle;"), "PerformerOf"
+                                ),
+                                tags$div(style="margin-bottom:4px;",
+                                  tags$span(style="display:inline-block;width:20px;height:3px;background:#6a994e;margin-right:6px;vertical-align:middle;"), "ProducerOf"
+                                )
+                              )
                             )
-                          ),
-                          fluidRow(
-                            column(width = 12,
-                              h4("Collaboration Heatmap", style = "margin-top:10px;"),
-                              plotlyOutput("collaborationHeatmap", height = "320px")
-                            )
-                          )),
-                        tabPanel("Impact Statistics",
-                          fluidRow(
-                            column(width = 12,
-                              h4("Impact Metrics", style = "margin-top:10px;"),
-                              plotlyOutput("impactMetrics", height = "300px")
-                            )
-                          ),
-                          fluidRow(
-                            column(width = 12,
-                              h4("Collaborator Network", style = "margin-top:10px;"),
-                              plotlyOutput("collaboratorNetwork", height = "300px")
-                            )
-                          ))
+                          )
+                        )
+        
+           
                      
                       )
                     )
@@ -833,9 +845,9 @@ ui <- dashboardPage(
                   br(),
                   fluidRow(
                     column(
-                      width = 4,
-                      wellPanel(
-                        h4("Community Influence Controls"),
+                      width = 3,
+                      
+                       
                         pickerInput(
                           inputId = "comm_from_node_type",
                           label = "Select From Node Type",
@@ -861,28 +873,95 @@ ui <- dashboardPage(
                           options = list(`actions-box` = TRUE, `live-search` = TRUE)
                         ),
                       
-                      )
+                      
                     ),
                     column(
-                      width = 8,
+                      width = 9,
                       tabsetPanel(
                         id = "comm_tabs",
                         type = "tabs",
                         tabPanel("Community Network",
-                          visNetworkOutput("commNetwork", height = "600px")
-                        ),
-                        tabPanel("Edge Table",
                           fluidRow(
-                            column(width = 12,
-                              h4("Community Influence Edge Table", style = "margin-top:10px;"),
-                              DTOutput("commEdgeTable")
+                            column(
+                              width = 10,
+                              visNetworkOutput("commNetwork", height = "600px")
+                            ),
+                            column(
+                              width = 2,
+                              tags$div(
+                                style = "padding: 0px; margin-top: 20px; font-size: 10px;",  # 去掉背景和边框，字体更小
+                                h4("Node Legend", style = "font-size: 12px; font-weight: bold; margin-bottom: 8px;"),
+                                tags$div(style="margin-bottom:4px;",
+                                         tags$span(style="display:inline-block;width:16px;height:16px;background:#A5C9FF;border:2px solid #1F75FE;margin-right:6px;border-radius:50%;"), "Person"
+                                ),
+                                tags$div(style="margin-bottom:4px;",
+                                         tags$span(style="display:inline-block;width:16px;height:16px;background:#FFFF00;border:2px solid #FFA500;margin-right:6px;border-radius:50%;"), "Song"
+                                ),
+                                tags$div(style="margin-bottom:4px;",
+                                         tags$span(style="display:inline-block;width:16px;height:16px;background:#F26C6C;border:2px solid #FF0000;margin-right:6px;border-radius:50%;"), "Album"
+                                ),
+                                tags$div(style="margin-bottom:4px;",
+                                         tags$span(style="display:inline-block;width:16px;height:16px;background:#6BDC37;border:2px solid #008000;margin-right:6px;border-radius:50%;"), "MusicalGroup"
+                                ),
+                                tags$div(style="margin-bottom:4px;",
+                                         tags$span(style="display:inline-block;width:16px;height:16px;background:#F279F2;border:2px solid #C000C0;margin-right:6px;border-radius:50%;"), "RecordLabel"
+                                ),
+                                h4("Edge Legend", style = "font-size: 12px; font-weight: bold; margin-bottom: 8px; margin-top: 10px;"),
+                                tags$div(style="margin-bottom:4px;",
+                                         tags$span(style="display:inline-block;width:20px;height:3px;background:#e76f51;margin-right:6px;vertical-align:middle;"), "CoverOf"
+                                ),
+                                tags$div(style="margin-bottom:4px;",
+                                         tags$span(style="display:inline-block;width:20px;height:3px;background:#457b9d;margin-right:6px;vertical-align:middle;"), "ComposerOf"
+                                ),
+                                tags$div(style="margin-bottom:4px;",
+                                         tags$span(style="display:inline-block;width:20px;height:3px;background:#2a9d8f;margin-right:6px;vertical-align:middle;"), "DirectlySamples"
+                                ),
+                                tags$div(style="margin-bottom:4px;",
+                                         tags$span(style="display:inline-block;width:20px;height:3px;background:#f4a261;margin-right:6px;vertical-align:middle;"), "InStyleOf"
+                                ),
+                                tags$div(style="margin-bottom:4px;",
+                                         tags$span(style="display:inline-block;width:20px;height:3px;background:#9d4edd;margin-right:6px;vertical-align:middle;"), "InterpolatesFrom"
+                                ),
+                                tags$div(style="margin-bottom:4px;",
+                                         tags$span(style="display:inline-block;width:20px;height:3px;background:#ffb703;margin-right:6px;vertical-align:middle;"), "LyricalReferenceTo"
+                                ),
+                                tags$div(style="margin-bottom:4px;",
+                                         tags$span(style="display:inline-block;width:20px;height:3px;background:#219ebc;margin-right:6px;vertical-align:middle;"), "LyricistOf"
+                                ),
+                                tags$div(style="margin-bottom:4px;",
+                                         tags$span(style="display:inline-block;width:20px;height:3px;background:#8ecae6;margin-right:6px;vertical-align:middle;"), "MemberOf"
+                                ),
+                                tags$div(style="margin-bottom:4px;",
+                                         tags$span(style="display:inline-block;width:20px;height:3px;background:#e63946;margin-right:6px;vertical-align:middle;"), "PerformerOf"
+                                ),
+                                tags$div(style="margin-bottom:4px;",
+                                         tags$span(style="display:inline-block;width:20px;height:3px;background:#6a994e;margin-right:6px;vertical-align:middle;"), "ProducerOf"
+                                )
+                              )
                             )
                           )
+                   
                         )
-                        # 你可以加更多tab，比如统计图等
+      
+                      )# <- 只保留这一个，结束 tabsetPanel
+                      
+                    ) # <- 结束 column(width = 9)
+                  
+                  ),# <- 结束 fluidRow
+                  
+                  fluidRow(
+                    column(
+                      width = 12,
+                      div(
+                        style = "padding-left: 15px; padding-right: 15px;",  # 加左右空隙
+                        DTOutput("commEdgeTable", width = "100%")
                       )
                     )
                   )
+                  
+                  
+                  
+                  
                 ) # End Tab 3
                 
                 
@@ -904,64 +983,133 @@ ui <- dashboardPage(
               status = "primary",
               collapsible = TRUE,
               tabsetPanel(
-                tabPanel("Genre Impact Overview",
-                         br(),
+                tabPanel("Influence Trend",
+                  br(),
+                  selectInput(
+                    "trend_target_genre",
+                    "Select Influence Genre:",
+                    choices = sort(unique(na.omit(nodes_tbl$genre))),
+                    selected = "Oceanus Folk"
+                  ),
                   fluidRow(
-                    column(width = 3,
-                    wellPanel(status = "info", solidHeader = TRUE, width = 12, style = "background-color: #f9f9f9; border: none; box-shadow: none;",
-                        selectInput("mainGenre", "Main Genre", choices = sort(unique(na.omit(all_nodes$genre))), selected = "Oceanus Folk"),
-                        sliderInput("yearRange", "Year Range:", min = 1983, max = 2038, value = c(1990, 2025), sep = ""),
-                        selectInput("nodeType", "Node Type:", choices = c("Song (Track)" = "Song", "Album" = "Album"), selected = "Song"),
-                        radioButtons("hopDepth", "Influence Path Depth:", choices = c("1-hop" = 1, "2-hop" = 2), selected = 1),
-                        sliderInput("fameYear", "Sailor Shift Fame Year:", min = 1983, max = 2038, value = 2012, sep = "")
-                      ),
-                      box(title = "Detail Panel", solidHeader = FALSE, width = 12,
-                        uiOutput("detailPanel")
-                      )
-                    ),
-                    column(width = 9,
-                      fluidRow(
-                        column(width = 6,
-                          box(title = "Pre-Fame Influence Network", solidHeader = FALSE, width = 12,
-                            visNetworkOutput("genreNetPre", height = "300px")
-                          )
-                        ),
-                        column(width = 6,
-                          box(title = "Post-Fame Influence Network", solidHeader = FALSE, width = 12,
-                            visNetworkOutput("genreNetPost", height = "300px")
-                          )
-                        )
-                      ),
-                      fluidRow(
-                        column(width = 12,
-                          box(title = "Timeline Trend", solidHeader = FALSE, width = 12,
-                            plotlyOutput("trendPlot", height = "250px")
-                          )
-                        )
-                      )
-                    )
-                  )
-                ),
-                tabPanel("Top Influenced Artists",
-                         br(),
-                  fluidRow(
-                    column(width = 3,
-                           wellPanel(status = "info", solidHeader = TRUE, width = 12, style = "background-color: #f9f9f9; border: none; box-shadow: none;",
-                        selectInput("top_artist_genre", "Focus Genre:", choices = sort(unique(na.omit(all_nodes$genre))), selected = "Oceanus Folk"),
-                        numericInput("top_n", "Top N Influenced Artists:", value = 10, min = 1, max = 50)
-                      )
-                    ),
-                    column(width = 9,
-                      box(title = "Top Influenced Artists by Genre", solidHeader = FALSE, width = 12,
-                        plotlyOutput("topInfluencedPlot", height = "200px")
-                      )
+                    column(width = 12,
+                      selectInput("trend_from_type", "From Node Type", choices = c("Both", "Song", "Album"), selected = "Both"),
+                      plotlyOutput("trendPlot", height = "400px")
                     )
                   ),
                   fluidRow(
                     column(width = 12,
-                      box(title = "Layered Genre-Artist Sankey", solidHeader = FALSE, width = 12,
-                        plotlyOutput("topGenreSankeyPlotly", height = "300px")
+                      DTOutput("influenceTrendTable")
+                    )
+                  )
+                ),
+                tabPanel("Genre to Genre",
+                  br(),
+                  fluidRow(
+                    column(width = 3,
+                      sliderInput(
+                        inputId = "pre_sailor_year",
+                        label = "Pre Sailor Shift Fame (to 2028)",
+                        min = min_year,
+                        max = 2028,
+                        value = c(min_year, 2028),
+                        step = 1,
+                        sep = ""
+                      ),
+                      sliderInput(
+                        inputId = "post_sailor_year",
+                        label = "Post Sailor Shift Fame (from 2028)",
+                        min = 2028,
+                        max = max_year,
+                        value = c(2028, max_year),
+                        step = 1,
+                        sep = ""
+                      ),
+                      pickerInput(
+                        inputId = "genre_chord_from_node_type",
+                        label = "Filter by From Node Type",
+                        choices = c("Song", "Album"),
+                        selected = c("Song", "Album"),
+                        multiple = TRUE,
+                        options = list(`actions-box` = TRUE, `live-search` = TRUE)
+                      ),
+                      pickerInput(
+                        inputId = "genre_chord_to_node_type",
+                        label = "Filter by To Node Type",
+                        choices = c("Song", "Album"),
+                        selected = c("Song", "Album"),
+                        multiple = TRUE,
+                        options = list(`actions-box` = TRUE, `live-search` = TRUE)
+                      ),
+                      pickerInput(
+                        inputId = "genre_chord_edge_type",
+                        label = "Filter by Edge Type",
+                        choices = c("InStyleOf", "CoverOf", "InterpolatesFrom", "LyricalReferenceTo", "DirectlySamples"),
+                        selected = c("InStyleOf", "CoverOf", "InterpolatesFrom", "LyricalReferenceTo", "DirectlySamples"),
+                        multiple = TRUE,
+                        options = list(`actions-box` = TRUE, `live-search` = TRUE)
+                      ),
+                      pickerInput(
+                        inputId = "chord_from_genre",
+                        label = "Filter by From Genre",
+                        choices = sort(unique(all_nodes$genre)),
+                        selected = sort(unique(all_nodes$genre)),
+                        multiple = TRUE,
+                        options = list(`actions-box` = TRUE, `live-search` = TRUE)
+                      ),
+                      pickerInput(
+                        inputId = "chord_to_genre",
+                        label = "Filter by To Genre",
+                        choices = sort(unique(all_nodes$genre)),
+                        selected = sort(unique(all_nodes$genre)),
+                        multiple = TRUE,
+                        options = list(`actions-box` = TRUE, `live-search` = TRUE)
                       )
+                    ),
+                    column(width = 9,
+                      div(
+                        style = "display: flex; justify-content: center; width: 100%;",
+                        chorddiag::chorddiagOutput("interactiveChorddiag", height = "600px")
+                      )
+              
+                    ),
+                    
+                    column(
+                      width = 12,
+                      style = "width: 100%; margin-top: 20px;",
+                      DT::dataTableOutput("genreChordTable")
+                    )  
+                    
+                  )
+                ),
+                tabPanel("Top Influenced Artists",
+                  br(),
+                  selectInput(
+                    "top_influenced_genre",
+                    "Select Influence Genre:",
+                    choices = sort(unique(na.omit(nodes_tbl$genre))),
+                    selected = "Oceanus Folk"
+                  ),
+                  selectInput("top_influenced_n", "Top N Influencers:",
+                    choices = c("Top 5" = 5, "Top 10" = 10, "Top 25" = 25, "Top 50" = 50, "Top 75" = 75, "Top 100" = 100),
+                    selected = 25
+                  ),
+                  pickerInput(
+                    inputId = "top_influenced_edge_type",
+                    label = "Edge Type (Artists Associated with Influencing Genres):",
+                    choices = c("PerformerOf", "ComposerOf", "LyricistOf", "ProducerOf"),
+                    selected = c("PerformerOf", "ComposerOf", "LyricistOf", "ProducerOf"),
+                    multiple = TRUE,
+                    options = list(`actions-box` = TRUE, `live-search` = TRUE)
+                  ),
+                  fluidRow(
+                    column(width = 12,
+                      plotlyOutput("topInfluencedSankeyPlotly", height = "600px")
+                    )
+                  ),
+                  fluidRow(
+                    column(width = 12,
+                      DT::dataTableOutput("topInfluencedSankeyTable")
                     )
                   )
                 )
@@ -990,9 +1138,10 @@ ui <- dashboardPage(
                 # --- Score Explorer Panel ---
                 tabPanel(
                   "Score Explorer",
+                  br(),
                   fluidRow(
                     column(
-                      width = 4,
+                      width = 3,
                       pickerInput(
                         inputId = "talent_genre",
                         label = "Filter by Genre",
@@ -1031,7 +1180,7 @@ ui <- dashboardPage(
                       downloadButton("download_weighted_scores", "📥 Download CSV")
                     ),
                     column(
-                      width = 8,
+                      width = 9,
                       tabsetPanel(
                         selected = "Scoreboard",
                         tabPanel("Scoreboard", DTOutput("talent_score_table")),
@@ -1064,18 +1213,23 @@ ui <- dashboardPage(
                     tabPanel("Trend Overview",
                              fluidRow(
                                column(
-                                 width = 4,
+                                 width = 3,
+                                 br(),
                                  pickerInput("trend_genre", "Select Genre(s)",
                                              choices = unique(na.omit(nodes_tbl$genre)),
                                              selected = unique(na.omit(nodes_tbl$genre))[1], multiple = TRUE,
                                              options = list(`actions-box` = TRUE)),
                                  sliderInput("trend_year_range", "Year Range",
-                                             min = 1983, max = 2038, value = c(2005, 2025), sep = ""),
-                                 checkboxGroupInput("trend_layers", "Show Layers",
-                                                    choices = c("Artist Count", "Song Count", "Newcomer Count"),
-                                                    selected = c("Song Count")),
+                                             min = 1983, max = 2040, value = c(2005, 2025), sep = ""),
+                                 radioButtons(
+                                   inputId = "trend_layers",
+                                   label = "Show Layer",
+                                   choices = c("Song Count"),
+                                   selected = "Song Count",
+                                   inline = TRUE
+                                 ),
                                  hr(),
-                                 downloadButton("download_trend_data", "📥 Export Trend Data")
+                                 downloadButton("download_trend_data", "\U0001F4E5 Export Trend Data")
                                ),
                                column(
                                  width = 8,
@@ -1103,7 +1257,7 @@ ui <- dashboardPage(
 #—————————————————————————————————————————————————————————————————————————————————————————— 
 server <- function(input, output, session) {
   
-  
+
   filtered_edges <- reactive({
     req(input$network_depth, input$edge_type)
     
@@ -1142,6 +1296,20 @@ server <- function(input, output, session) {
         filter(is.na(genre) | genre %in% input$genre_filter)
     }
     
+    # 计算 degree
+    sub_ids <- df$id
+    subgraph <- igraph::induced_subgraph(as.igraph(graph), vids = sub_ids)
+    degs <- igraph::degree(subgraph, mode = "all")
+    df <- df %>%
+      mutate(
+        degree = unname(degs[as.character(id)]),
+        size = ifelse(label == "Sailor Shift", 50, 15 + degree * 2),
+        color.background = unname(sapply(group, function(g) node_colors[[g]]$fill)),
+        color.border = unname(sapply(group, function(g) node_colors[[g]]$border)),
+        color.highlight.background = unname(color.background),
+        color.highlight.border = unname(color.border),
+        shape = ifelse(label == "Sailor Shift", "star", "dot")
+      )
     df
   })
   
@@ -1154,7 +1322,16 @@ server <- function(input, output, session) {
   })
   
   output$directGraph <- renderVisNetwork({
-    req(filtered_nodes(), filtered_edges())
+    print('renderVisNetwork: directGraph')
+    nodes <- as.data.frame(filtered_nodes())
+    edges <- as.data.frame(filtered_edges())
+    nodes[] <- lapply(nodes, unname)
+    edges[] <- lapply(edges, unname)
+    rownames(nodes) <- NULL
+    rownames(edges) <- NULL
+    print(str(nodes))
+    print(str(edges))
+    req(nodes, edges)
     
     # 自定义每种 edge_type 的颜色
     edge_colors <- c(
@@ -1170,11 +1347,11 @@ server <- function(input, output, session) {
       "ProducerOf"          = "#6a994e"
     )
     
-    valid_ids <- filtered_nodes()$id
+    valid_ids <- nodes$id
     
     
     
-    edges_all <- filtered_edges() %>%
+    edges_all <- edges %>%
       filter(from %in% valid_ids, to %in% valid_ids) %>%
       mutate(
         color = edge_colors[edge_type],
@@ -1184,22 +1361,21 @@ server <- function(input, output, session) {
       )
     
     
-    visNetwork(filtered_nodes(), edges_all, width = "100%", height = "700px") %>%
-      visEdges(arrows = "to", color = list(color = edges_all$color)) %>%
-      visOptions(highlightNearest = TRUE) %>%
-      visLegend(
-        position = "right",
-        addEdges = data.frame(
-          label = c(
-            "CoverOf\n\n", "ComposerOf\n\n", "DirectlySamples\n\n", "InStyleOf\n\n",
-            "InterpolatesFrom\n\n", "LyricalReferenceTo\n\n", "LyricistOf\n\n",
-            "MemberOf\n\n", "PerformerOf\n\n", "ProducerOf\n\n"
-          ),
-          color = unname(edge_colors)
+    visNetwork(nodes, edges_all, width = "100%", height = "700px") %>%
+      visNodes(color = list(
+        background = nodes$color.background,
+        border = nodes$color.border,
+        highlight = list(
+          background = nodes$color.highlight.background,
+          border = nodes$color.highlight.border,
+          borderWidth = 6
         )
-      )%>%
+      )) %>%
+      visEdges(arrows = "to", color = list(color = unname(edges_all$color))) %>%
+      visOptions(highlightNearest = TRUE) %>%
       visPhysics(solver = "forceAtlas2Based") %>%
       visLayout(randomSeed = 123)
+    
   })
   
   
@@ -1275,7 +1451,11 @@ server <- function(input, output, session) {
       datatable(data.frame(Message = "No data to display"), options = list(dom = 't'))
     }
   })
+  
   output$groupEdgeBarPlot <- renderPlotly({
+    print('renderPlotly: groupEdgeBarPlot')
+    print(str(filtered_edges()))
+    print(str(filtered_nodes()))
     req(filtered_edges(), filtered_nodes())
     
     edge_df <- filtered_edges()
@@ -1358,76 +1538,60 @@ server <- function(input, output, session) {
   
   # Prepare impact data based on direction
   impact_data <- reactive({
-    req(input$impact_direction, input$impact_depth, input$impact_edge_type, input$impact_node_type)
-    
-    direction <- input$impact_direction
-    depth <- input$impact_depth
-    
+    req(input$impact_depth, input$impact_edge_type, input$impact_node_type)
     # Extract subnetwork based on direction
-    if (direction == "out") {
-      subg <- extract_subnetwork(graph, "Sailor Shift", distance = depth, direction = "out")
-    } else if (direction == "in") {
-      subg <- extract_subnetwork(graph, "Sailor Shift", distance = depth, direction = "in")
+    if (input$impact_depth == 1) {
+      subg <- extract_subnetwork(graph, "Sailor Shift", distance = 1, direction = "in")
+    } else if (input$impact_depth == 2) {
+      subg <- extract_subnetwork(graph, "Sailor Shift", distance = 2, direction = "in")
     } else {
-      subg <- extract_subnetwork(graph, "Sailor Shift", distance = depth, direction = "all")
+      subg <- extract_subnetwork(graph, "Sailor Shift", distance = 3, direction = "in")
     }
-    
     # Convert to data frames
     impact_nodes <- igraph::as_data_frame(subg, what = "vertices") %>%
-      mutate(id = name, label = name, group = `Node Type`)
-    
+      mutate(id = name, label = name, group = `Node Type`,
+             color.background = unname(sapply(`Node Type`, function(g) node_colors[[g]]$fill)),
+             color.border = unname(sapply(`Node Type`, function(g) node_colors[[g]]$border)),
+             shape = ifelse(label == "Sailor Shift", "star", "dot"),
+             size = ifelse(label == "Sailor Shift", 50, 25))
     impact_edges <- igraph::as_data_frame(subg, what = "edges") %>%
       filter(`Edge Type` %in% input$impact_edge_type) %>%
       rename(from = from, to = to, label = `Edge Type`)
-    
     # Filter nodes based on selected types
     impact_nodes <- impact_nodes %>%
       filter(group %in% input$impact_node_type)
-    
     # Get used nodes
     used_nodes <- unique(c(impact_edges$from, impact_edges$to))
     impact_nodes <- impact_nodes %>% filter(id %in% used_nodes)
-    
+    # 计算 degree
+    sub_ids <- impact_nodes$id
+    subgraph <- igraph::induced_subgraph(as.igraph(graph), vids = sub_ids)
+    degs <- igraph::degree(subgraph, mode = "all")
+    impact_nodes <- impact_nodes %>%
+      mutate(
+        degree = unname(degs[as.character(id)]),
+        size = ifelse(label == "Sailor Shift", 50, 15 + degree * 2),
+        color.background = unname(sapply(group, function(g) node_colors[[g]]$fill)),
+        color.border = unname(sapply(group, function(g) node_colors[[g]]$border)),
+        shape = ifelse(label == "Sailor Shift", "star", "dot")
+      )
     list(nodes = impact_nodes, edges = impact_edges)
   })
   
-  # Collaboration data
-  collaboration_data <- reactive({
-    req(input$collaborator_type, input$collab_year_range)
-    
-    # Get Sailor Shift's works
-    sailor_works <- nodes_tbl %>%
-      filter(`Node Type` %in% c("Song", "Album")) %>%
-      left_join(edges_tbl_graph, by = c("index" = "to")) %>%
-      filter(`Edge Type` == "PerformerOf", from %in% 
-             (nodes_tbl %>% filter(node_name == "Sailor Shift") %>% pull(index)))
-    
-    # Get collaborators
-    collaborators <- edges_tbl_graph %>%
-      filter(to %in% sailor_works$index, 
-             `Edge Type` %in% input$collaborator_type) %>%
-      left_join(nodes_tbl %>% select(index, node_name, `Node Type`), by = c("from" = "index")) %>%
-      left_join(nodes_tbl %>% select(index, release_date, genre), by = c("to" = "index")) %>%
-      filter(!is.na(release_date),
-             as.numeric(release_date) >= input$collab_year_range[1],
-             as.numeric(release_date) <= input$collab_year_range[2])
-    
-    collaborators
-  })
   
   # Impact Network
   output$impactNetwork <- renderVisNetwork({
-    req(impact_data())
-    
+    print('renderVisNetwork: impactNetwork')
     data <- impact_data()
-    nodes <- data$nodes
-    edges <- data$edges
-    
-    if (nrow(nodes) == 0 || nrow(edges) == 0) {
-      return(visNetwork(nodes = data.frame(id = 1, label = "No data"), 
-                       edges = data.frame(from = integer(), to = integer())) %>%
-               visLayout(randomSeed = 123))
-    }
+    nodes <- as.data.frame(data$nodes)
+    edges <- as.data.frame(data$edges)
+    nodes[] <- lapply(nodes, unname)
+    edges[] <- lapply(edges, unname)
+    rownames(nodes) <- NULL
+    rownames(edges) <- NULL
+    print(str(nodes))
+    print(str(edges))
+    req(nodes, edges)
     
     # Edge colors
     edge_colors <- c(
@@ -1444,148 +1608,13 @@ server <- function(input, output, session) {
       )
     
     visNetwork(nodes, edges_styled, width = "100%", height = "600px") %>%
-      visEdges(arrows = "to", color = list(color = edges_styled$color)) %>%
+      visEdges(arrows = "to", color = list(color = unname(edges_styled$color))) %>%
       visOptions(highlightNearest = TRUE) %>%
-      visLegend(position = "right", addEdges = data.frame(
-        label = names(edge_colors), color = unname(edge_colors)
-      )) %>%
       visPhysics(solver = "forceAtlas2Based") %>%
       visLayout(randomSeed = 123)
+    
   })
   
-  # Collaboration Timeline
-  output$collabTimeline <- renderPlotly({
-    req(collaboration_data())
-    
-    collab_data <- collaboration_data() %>%
-      mutate(
-        year = as.numeric(substr(release_date, 1, 4)),
-        collaborator_name = node_name
-      ) %>%
-      group_by(year, `Edge Type`, collaborator_name) %>%
-      summarise(count = n(), .groups = 'drop')
-    
-    if (nrow(collab_data) == 0) return(plotly_empty())
-    
-    p <- ggplot(collab_data, aes(x = year, y = count, color = `Edge Type`, 
-                                 text = paste("Collaborator:", collaborator_name, "<br>Type:", `Edge Type`, "<br>Count:", count))) +
-      geom_line(size = 1.2) +
-      geom_point(size = 3) +
-      labs(title = "Sailor Shift Collaboration Timeline", x = "Year", y = "Collaboration Count") +
-      theme_minimal()
-    
-    ggplotly(p, tooltip = "text")
-  })
-  
-  # Genre Impact Chart
-  output$genreImpactChart <- renderPlotly({
-    req(impact_data())
-    
-    data <- impact_data()
-    nodes <- data$nodes
-    
-    genre_summary <- nodes %>%
-      filter(!is.na(genre)) %>%
-      count(genre) %>%
-      arrange(desc(n))
-    
-    if (nrow(genre_summary) == 0) return(plotly_empty())
-    
-    plot_ly(genre_summary, x = ~genre, y = ~n, type = "bar", 
-            text = ~n, textposition = 'auto') %>%
-      layout(
-        xaxis = list(title = "Genre"),
-        yaxis = list(title = "Count")
-      )
-  })
-  
-  # Influence Strength Chart
-  output$influenceStrengthChart <- renderPlotly({
-    req(impact_data())
-    
-    data <- impact_data()
-    edges <- data$edges
-    
-    edge_summary <- edges %>%
-      count(label) %>%
-      arrange(desc(n))
-    
-    if (nrow(edge_summary) == 0) return(plotly_empty())
-    
-    plot_ly(edge_summary, x = ~label, y = ~n, type = "bar", 
-            text = ~n, textposition = 'auto') %>%
-      layout(
-        xaxis = list(title = "Edge Type"),
-        yaxis = list(title = "Count")
-      )
-  })
-  
-  # Collaboration Heatmap
-  output$collaborationHeatmap <- renderPlotly({
-    req(collaboration_data())
-    
-    collab_data <- collaboration_data() %>%
-      mutate(year = as.numeric(substr(release_date, 1, 4))) %>%
-      group_by(year, `Edge Type`) %>%
-      summarise(count = n(), .groups = 'drop')
-    
-    if (nrow(collab_data) == 0) return(plotly_empty())
-    
-    # Create heatmap
-    p <- ggplot(collab_data, aes(x = factor(year), y = `Edge Type`, fill = count)) +
-      geom_tile() +
-      scale_fill_viridis_c() +
-      labs(x = "Year", y = "Collaboration Type") +
-      theme_minimal()
-    
-    ggplotly(p) %>%
-      layout(
-        xaxis = list(title = "Year"),
-        yaxis = list(title = "Collaboration Type")
-      )
-  })
-  
-  # Impact Metrics
-  output$impactMetrics <- renderPlotly({
-    req(impact_data())
-    
-    data <- impact_data()
-    nodes <- data$nodes
-    
-    # Calculate metrics
-    total_nodes <- nrow(nodes)
-    node_types <- nodes %>% count(group)
-    notable_count <- sum(nodes$notable == TRUE, na.rm = TRUE)
-    
-    metrics_df <- data.frame(
-      Metric = c("Total Connected Nodes", "Node Types", "Notable Works"),
-      Count = c(total_nodes, nrow(node_types), notable_count)
-    )
-    
-    plot_ly(metrics_df, x = ~Metric, y = ~Count, type = "bar", 
-            text = ~Count, textposition = 'auto') %>%
-      layout(
-        xaxis = list(title = "Metric"),
-        yaxis = list(title = "Count")
-      )
-  })
-  
-  # Collaborator Network
-  output$collaboratorNetwork <- renderPlotly({
-    req(collaboration_data())
-    
-    collab_data <- collaboration_data() %>%
-      count(node_name, `Edge Type`) %>%
-      arrange(desc(n))
-    
-    if (nrow(collab_data) == 0) return(plotly_empty())
-    
-    plot_ly(collab_data, x = ~node_name, y = ~n, color = ~`Edge Type`, type = "bar") %>%
-      layout(
-        xaxis = list(title = "Collaborator"),
-        yaxis = list(title = "Collaboration Count")
-      )
-  })
   
   # Impact Table
   output$impactTable <- renderDT({
@@ -1608,14 +1637,14 @@ server <- function(input, output, session) {
               rownames = FALSE)
   })
   
+  
+  
+  
+  
+  
 
   # ------------- Genre Diffusion Tracker Sever Part -----------------
-  graph_data <- fromJSON("data/MC1_graph.json")
-  nodes_df <- as.data.frame(graph_data$nodes)
-  edges_df <- as.data.frame(graph_data$links)
-  
-  all_nodes <- nodes_df
-  
+
   # Reactive filtering
   filtered <- reactive({
     nodes <- all_nodes
@@ -1650,311 +1679,101 @@ server <- function(input, output, session) {
   })
   
   output$trendPlot <- renderPlotly({
-    data <- filtered()$nodes
-    if (nrow(data) == 0) return(NULL)
-    
-    df <- data %>% 
-      filter(!is.na(release_date)) %>%
-      mutate(Year = as.numeric(release_date)) %>%
-      group_by(Year, genre) %>%
-      summarize(Count = n(), .groups = 'drop')
-    
-    if (nrow(df) == 0) return(NULL)
-    
-    p <- ggplot(df, aes(x = Year, y = Count, fill = genre)) +
-      geom_area(alpha = 0.6) +
-      labs(x = "Year", y = "Affected Count", fill = "Genre") +
-      theme_minimal()
-    
-    ggplotly(p)
-  })
-  
-  output$genreNetPre <- renderVisNetwork({
-    data <- filtered()
-    nodes <- data$nodes
-    edges <- data$edges
-    if (nrow(nodes) == 0 || nrow(edges) == 0) return(NULL)
-    
-    main_genre <- input$mainGenre
-    fame_cut <- input$fameYear
-    
-    pre_ids <- nodes %>% filter(genre == main_genre, as.numeric(release_date) < fame_cut) %>% pull(id)
-    if (length(pre_ids) == 0) return(NULL)
-    
-    if (input$hopDepth == 1) {
-      edges_sub <- edges %>% filter(source %in% pre_ids | target %in% pre_ids)
-    } else {
-      one_hop <- edges %>% filter(source %in% pre_ids | target %in% pre_ids) %>% pull(source, target) %>% unlist() %>% unique()
-      edges_sub <- edges %>% filter(source %in% c(pre_ids, one_hop) | target %in% c(pre_ids, one_hop))
+    nodes <- all_nodes
+    edges <- edges_df
+    target_genre <- input$trend_target_genre
+    # 只保留 to 节点 genre 为 target_genre 的边
+    detail_df <- edges %>%
+      left_join(nodes %>% select(id, from_name = name, from_type = `Node Type`, from_release_date = release_date, from_genre = genre), by = c("source" = "id")) %>%
+      left_join(nodes %>% select(id, to_name = name, to_type = `Node Type`, to_release_date = release_date, to_genre = genre), by = c("target" = "id")) %>%
+      filter(!is.na(to_genre) & tolower(trimws(to_genre)) == tolower(trimws(target_genre))) %>%
+      filter(to_type %in% c("Song", "Album"), from_type %in% c("Song", "Album")) %>%
+      mutate(From_Year = as.numeric(substr(from_release_date, 1, 4))) %>%
+      filter(!is.na(From_Year) & From_Year >= 1900 & From_Year <= 2100)
+
+    # 新增：根据 input$trend_from_type 过滤 from_type
+    if (!is.null(input$trend_from_type) && input$trend_from_type != "Both") {
+      detail_df <- detail_df %>% filter(from_type == input$trend_from_type)
     }
-    nodes_sub <- nodes %>% filter(id %in% unique(c(edges_sub$source, edges_sub$target)))
-    
-    vis_nodes <- data.frame(id = nodes_sub$id, label = nodes_sub$name, group = nodes_sub$genre)
-    vis_edges <- data.frame(from = edges_sub$source, to = edges_sub$target, arrows = "to")
-    
-    visNetwork(vis_nodes, vis_edges) %>%
-      visOptions(highlightNearest = TRUE, nodesIdSelection = TRUE) %>%
-      visLegend(useGroups = TRUE) %>%
-      visEvents(select = "function(nodes) {
-                Shiny.setInputValue('genreNetPre_selected', nodes.nodes[0], {priority: 'event'});
-                }")
-  })
-  
-  output$genreNetPost <- renderVisNetwork({
-    data <- filtered()
-    nodes <- data$nodes
-    edges <- data$edges
-    if (nrow(nodes) == 0 || nrow(edges) == 0) return(NULL)
-    
-    main_genre <- input$mainGenre
-    fame_cut <- input$fameYear
-    
-    post_ids <- nodes %>% filter(genre == main_genre, as.numeric(release_date) >= fame_cut) %>% pull(id)
-    if (length(post_ids) == 0) return(NULL)
-    
-    if (input$hopDepth == 1) {
-      edges_sub <- edges %>% filter(source %in% post_ids | target %in% post_ids)
-    } else {
-      one_hop <- edges %>% filter(source %in% post_ids | target %in% post_ids) %>% pull(source, target) %>% unlist() %>% unique()
-      edges_sub <- edges %>% filter(source %in% c(post_ids, one_hop) | target %in% c(post_ids, one_hop))
+    # genre 多选筛选
+    if (!is.null(input$trend_from_genre)) {
+      detail_df <- detail_df %>% filter(from_genre %in% input$trend_from_genre)
     }
-    nodes_sub <- nodes %>% filter(id %in% unique(c(edges_sub$source, edges_sub$target)))
-    
-    vis_nodes <- data.frame(id = nodes_sub$id, label = nodes_sub$name, group = nodes_sub$genre)
-    vis_edges <- data.frame(from = edges_sub$source, to = edges_sub$target, arrows = "to")
-    
-    visNetwork(vis_nodes, vis_edges) %>%
-      visOptions(highlightNearest = TRUE, nodesIdSelection = TRUE) %>%
-      visLegend(useGroups = TRUE) %>%
-      visEvents(select = "function(nodes) {
-                      Shiny.setInputValue('genreNetPost_selected', nodes.nodes[0], {priority: 'event'});
-      }")
-    
-  })
-  
-  output$topInfluencedPlot <- renderPlotly({
-    data <- filtered()
-    nodes <- data$nodes
-    edges <- data$edges
-    genre_selected <- input$top_artist_genre
-    top_n <- input$top_n
-    
-    if (nrow(nodes) == 0 || nrow(edges) == 0) return(NULL)
-    
-    # Count how often each artist is the target of an edge where source is mainGenre
-    main_ids <- nodes %>% filter(genre == genre_selected) %>% pull(id)
-    filtered_edges <- edges %>% filter(source %in% main_ids, !is.na(target))
-    
-    target_counts <- filtered_edges %>%
-      group_by(target) %>%
-      summarize(InfluenceCount = n(), .groups = "drop") %>%
-      arrange(desc(InfluenceCount)) %>%
-      head(top_n)
-    
-    top_nodes <- nodes %>% filter(id %in% target_counts$target) %>% select(id, name, genre)
-    plot_data <- target_counts %>% left_join(top_nodes, by = c("target" = "id"))
-    
-    p <- ggplot(plot_data, aes(x = reorder(name, InfluenceCount), y = InfluenceCount, fill = genre)) +
-      geom_bar(stat = "identity") +
-      coord_flip() +
-      labs(x = "Artist", y = "Influence Count", title = "Top Influenced Artists") +
+
+    # 统计每年每 genre 有多少 unique from 节点
+    df <- detail_df %>%
+      group_by(From_Year, from_genre) %>%
+      summarise(Count = n_distinct(source), .groups = 'drop') %>%
+      rename(Year = From_Year, Genre = from_genre)
+
+    if (nrow(df) == 0) return(plotly_empty())
+
+    # 自动补全 genre_colors
+    base_colors <- c(
+      "Alternative Rock"        = "#f78e84",
+      "Americana"               = "#d56d30",
+      "Avant-Garde Folk"        = "#d99000",
+      "Blues Rock"              = "#daa520",
+      "Darkwave"                = "#827400",
+      "Desert Rock"             = "#7b8b19",
+      "Doom Metal"              = "#5d9200",
+      "Dream Pop"               = "#3cb100",
+      "Emo/Pop Punk"            = "#00b15a",
+      "Indie Folk"              = "#00b983",
+      "Indie Pop"               = "#00c4a1",
+      "Indie Rock"              = "#00ccc2",
+      "Jazz Surf Rock"          = "#00d3d4",
+      "Lo-Fi Electronica"       = "#00b3ed",
+      "Oceanus Folk"            = "#2095f2",
+      "Post-Apocalyptic Folk"   = "#339dff",
+      "Psychedelic Rock"        = "#8f95ff",
+      "Southern Gothic Rock"    = "#a08fff",
+      "Space Rock"              = "#cc84ff",
+      "Speed Metal"             = "#e374e6",
+      "Symphonic Metal"         = "#f270d0",
+      "Synthpop"                = "#f36ebe",
+      "Synthwave"               = "#f57caa",
+      "Acoustic Folk"           = "#a3d977",  # 新增
+      "Celtic Folk"             = "#80cbc4",  # 新增
+      "Sea Shanties"            = "#ba68c8"  # 新增
+    )
+    genres_in_data <- unique(df$Genre)
+    missing_genres <- setdiff(genres_in_data, names(base_colors))
+    # 自动为缺失的 genre 分配颜色
+    if (length(missing_genres) > 0) {
+      extra_colors <- grDevices::rainbow(length(missing_genres), start = 0.1, end = 0.9)
+      names(extra_colors) <- missing_genres
+      genre_colors <- c(base_colors, extra_colors)
+    } else {
+      genre_colors <- base_colors
+    }
+
+    # 确保 factor levels 顺序
+    df$Genre <- factor(df$Genre, levels = names(genre_colors))
+
+    p <- ggplot(df, aes(x = Year, y = Count, color = Genre)) +
+      geom_line(size = 1) +
+      geom_point(size = 2) +
+      scale_color_manual(values = genre_colors, na.value = "#cccccc") +
+      labs(
+        x = "Year",
+        y = "Count",
+        title = paste("Number of Unique Influencing Works by", input$trend_target_genre)
+      ) +
       theme_minimal()
-    
+
     ggplotly(p)
   })
   
   
-  
-  selectedNodeId <- reactiveVal(NULL)
-  
-  observeEvent(input$genreNetPre_selected, {
-    selectedNodeId(input$genreNetPre_selected)
-  })
-  observeEvent(input$genreNetPost_selected, {
-    selectedNodeId(input$genreNetPost_selected)
-  })
-  
-  observeEvent(event_data("plotly_click", source = "sankeyGenre"), {
-    clicked <- event_data("plotly_click", source = "sankeyGenre")
-    if (!is.null(clicked)) {
-      node_label <- clicked[["label"]]
-      
-      if (!is.null(node_label) && node_label %in% nodes_df$name) {
-        node_row <- nodes_df %>% filter(name == node_label)
-        if (nrow(node_row) > 0) {
-          selectedNodeId(node_row$id[1])
-        }
-      } else {
-        cat("⚠️ Node label not found in nodes_df$name: ", node_label, "\n")
-      }
-    }
-  })
-  
-  
-  
-  output$detailPanel <- renderUI({
-    sel_id <- selectedNodeId()
-    if (is.null(sel_id)) {
-      return(tags$p("Click a node in the network or Sankey diagram to view details."))
-    }
-    
-    node_row <- nodes_df %>% filter(id == sel_id)
-    if (nrow(node_row) == 0) return(NULL)
-    
-    name    <- node_row$name
-    works   <- ifelse(!is.null(node_row$representative_works), node_row$representative_works, "N/A")
-    activeY <- ifelse(!is.null(node_row$release_date), node_row$release_date, "Unknown")
-    genre   <- ifelse(!is.null(node_row$genre), node_row$genre, "Unknown")
-    type    <- ifelse(!is.null(node_row$`Node Type`), node_row$`Node Type`, "Unknown")
-    notable <- ifelse(!is.null(node_row$notable), as.character(node_row$notable), "N/A")
-    
-    sshift_id <- nodes_df$id[nodes_df$name == "Sailor Shift"]
-    related <- any(edges_df$Edge.Type %in% c("MemberOf", "InStyleOf", "LyricistOf", "LyricalReferenceTo") &
-                     ((edges_df$source == sel_id & edges_df$target == sshift_id) |
-                        (edges_df$source == sshift_id & edges_df$target == sel_id)))
-    
-    tagList(
-      h4(paste0("Name: ", name)),
-      p(paste0("Genre: ", genre)),
-      p(paste0("Type: ", type)),
-      p(paste0("Representative Works: ", works)),
-      p(paste0("Active Year: ", activeY)),
-      p(paste0("Notable: ", notable)),
-      p(paste0("Collaboration / Style Similarity with Sailor Shift: ", ifelse(related, "Yes", "No")))
-    )
-  })
-  
-  
-  
-  output$topGenreSankeyPlotly <- renderPlotly({
-    data <- filtered()
-    edges <- data$edges
-    nodes <- data$nodes
-    if (nrow(edges) == 0 || nrow(nodes) == 0) return(NULL)
-    
-    genre_selected <- input$top_artist_genre
-    top_n <- input$top_n
-    
-    main_ids <- nodes %>% filter(genre == genre_selected) %>% pull(id)
-    sankey_edges <- edges %>% filter(source %in% main_ids)
-    
-    top_targets <- sankey_edges %>%
-      group_by(target) %>%
-      summarize(value = n(), .groups = 'drop') %>%
-      top_n(top_n, wt = value)
-    
-    top_artists <- nodes %>%
-      filter(id %in% top_targets$target) %>%
-      select(id, artist_name = name, genre) %>%
-      mutate(label = "Unknown Label")
-    
-    # build 3-layer sankey: Genre → Artist → Label (if label exists)
-    sankey_df <- top_artists %>%
-      mutate(genre_node = genre_selected,
-             artist_node = artist_name,
-             label_node = ifelse(is.na(label), "Unknown Label", label))
-    
-    # node list
-    nodes_list <- unique(c(sankey_df$genre_node, sankey_df$artist_node, sankey_df$label_node))
-    sankey_nodes_df <- data.frame(name = nodes_list, stringsAsFactors = FALSE)
-    
-    # links: Genre → Artist
-    link1 <- sankey_df %>%
-      count(source = genre_node, target = artist_node, wt = 1)
-    
-    # links: Artist → Label
-    link2 <- sankey_df %>%
-      count(source = artist_node, target = label_node, wt = 1)
-    
-    links_df <- bind_rows(link1, link2) %>%
-      mutate(source_id = match(source, nodes_list) - 1,
-             target_id = match(target, nodes_list) - 1)
-    
-    # Color
-    base_colors <- c("#007bff", "#ff9999", "#66c2a5", "#e78ac3", "#f9c74f","#8da0cb","#a6d854","#fc8d62")
-    node_colors <- alpha(colorRampPalette(
-      c("#007bff", "#ff9999", "#66c2a5", "#e78ac3", "#f9c74f","#8da0cb","#a6d854","#fc8d62"))(length(nodes_list)), 0.6)
-    link_colors <- scales::alpha(
-      col_factor(
-        palette = colorRampPalette(c("#007bff", "#ff9999", "#66c2a5", "#e78ac3", "#f9c74f","#8da0cb","#a6d854","#fc8d62"))(length(unique(links_df$source))),
-        domain = links_df$source
-      )(links_df$source),
-      alpha = 0.4
-    )
-    
-    # Build Sankey
-    plot_ly(
-      type = "sankey",
-      source = "sankeyGenre",
-      domain = list(x = c(0, 1), y = c(0, 1)),
-      orientation = "h",
-      node = list(
-        label = sankey_nodes_df$name,
-        color = node_colors,
-        pad = 15,
-        thickness = 20,
-        line = list(color = "gray30", width = 0.5),
-        hovertemplate = paste("Node: %{label}<extra></extra>")
-      ),
-      link = list(
-        source = links_df$source_id,
-        target = links_df$target_id,
-        value = links_df$n,
-        color = link_colors,
-        hoverinfo = "all",
-        hoverlabel = list(bgcolor = "white")
-      )
-    ) %>%
-      layout(
-        font = list(size = 12),
-        margin = list(l = 20, r = 20, b = 20, t = 40)
-      )
-  })
-  
-  
-  observe({
-    updateSelectInput(session, "top_artist_genre",
-                      choices = sort(unique(na.omit(nodes_df$genre))),
-                      selected = "Oceanus Folk")
-  })
-  
-  output$chordDiagram <- renderPlot({
-    library(circlize)
-    circos.clear()
-    
-    genre_matrix <- processedData()$genre_matrix
-    
-    cat("Matrix size: ", dim(genre_matrix), "\n")
-    print(genre_matrix[1:5, 1:5])  # 打印前几行
-    
-    if (is.null(genre_matrix) || nrow(genre_matrix) == 0) {
-      cat("⚠️ genre_matrix is empty.\n")
-      return(NULL)
-    }
-    
-    genre_list <- union(rownames(genre_matrix), colnames(genre_matrix))
-    genre_colors <- setNames(
-      colorRampPalette(c("#007bff", "#ff9999", "#66c2a5", "#e78ac3", "#f9c74f", "#8da0cb", "#a6d854", "#fc8d62"))(length(genre_list)),
-      genre_list
-    )
-    
-    cat("✅ chordDiagram starting...\n")
-    
-    chordDiagram(
-      genre_matrix,
-      transparency = 0.3,
-      grid.col = genre_colors,
-      annotationTrack = "grid",
-      preAllocateTracks = 1
-    )
-  })
+
   
   
   # --- Server: Talent Radar & Snapshot Logic ---
   # 1) Ensure g_tbl has 'name' attribute for extract_subnetwork()
-  library(tidygraph)
+ 
   # Prepare igraph for extract_subnetwork
-  library(tidygraph)
+ 
   g_tbl <- tbl_graph(nodes = nodes_tbl, edges = edges_tbl_graph, directed = TRUE) %>%
     activate(nodes) %>%
     mutate(name = node_name)
@@ -2162,16 +1981,11 @@ server <- function(input, output, session) {
         id = index,
         label = node_name,
         group = `Node Type`,
-        color = case_when(
-          node_name == input$snapshot_artist_detail ~ "#27ae60",
-          group == "Person" ~ "#457b9d",
-          group == "Song" ~ "#e76f51",
-          group == "Album" ~ "#f4a261",
-          group == "MusicalGroup" ~ "#2a9d8f",
-          group == "RecordLabel" ~ "#9d4edd",
-          TRUE ~ "#cccccc"
-        ),
-        shape = ifelse(node_name == input$snapshot_artist_detail, "star", "dot")
+        degree = unname(degs[as.character(id)]),
+        color.background = ifelse(node_name == input$snapshot_artist_detail, "#27ae60", unname(sapply(group, function(g) node_colors[[g]]$fill))),
+        color.border = ifelse(node_name == input$snapshot_artist_detail, "#27ae60", unname(sapply(group, function(g) node_colors[[g]]$border))),
+        shape = ifelse(node_name == input$snapshot_artist_detail, "star", "dot"),
+        size = ifelse(node_name == input$snapshot_artist_detail, 50, 25)
       )
     vs_edges <- as_tibble(subg, active = "edges") %>%
       transmute(
@@ -2204,81 +2018,78 @@ server <- function(input, output, session) {
       return()
     }
 
-    output$snapshot_influence_graph <- renderVisNetwork({
-      visNetwork(vs_nodes, vs_edges, width = "100%", height = "600px") %>%
-        visNodes(color = list(background = vs_nodes$color), shape = vs_nodes$shape) %>%
-        visEdges(arrows = 'to', color = list(color = vs_edges$color), width = vs_edges$width) %>%
-        visOptions(highlightNearest = TRUE, nodesIdSelection = TRUE) %>%
-        visLegend(
-          position = 'right',
-          useGroups = TRUE,
-          addNodes = data.frame(
-            label = c("Person", "Song", "Album", "MusicalGroup", "RecordLabel", "Selected Artist"),
-            color = c("#457b9d", "#e76f51", "#f4a261", "#2a9d8f", "#9d4edd", "#27ae60")
-          ),
-          addEdges = data.frame(
-            label = c("CoverOf", "ComposerOf", "DirectlySamples", "InStyleOf", "InterpolatesFrom", "LyricalReferenceTo", "LyricistOf", "MemberOf", "PerformerOf", "ProducerOf"),
-            color = c("#e76f51", "#457b9d", "#2a9d8f", "#f4a261", "#9d4edd", "#ffb703", "#219ebc", "#8ecae6", "#e63946", "#6a994e")
-          )
-        ) %>%
-        visPhysics(solver = 'forceAtlas2Based') %>%
-        visLayout(randomSeed = 123)
-    })
+
   })
   
   # --- Trend Dashboard Server ---
+  # 1. Reactive 歌曲过滤
   filtered_trend <- reactive({
     req(input$trend_genre, input$trend_year_range)
-    nodes <- nodes_tbl %>%
+    
+    nodes_tbl %>%
+      mutate(index = row_number()) %>%
       filter(
-        genre %in% input$trend_genre,
         `Node Type` %in% c("Song", "Album"),
+        genre %in% input$trend_genre,
         !is.na(release_date),
-        as.numeric(release_date) >= input$trend_year_range[1],
-        as.numeric(release_date) <= input$trend_year_range[2]
+        as.numeric(substr(release_date, 1, 4)) >= input$trend_year_range[1],
+        as.numeric(substr(release_date, 1, 4)) <= input$trend_year_range[2]
       )
-    nodes
   })
   
+  # 2. 热力图输出
   output$trend_heatmap <- renderPlotly({
-    data <- filtered_trend()
-    if (nrow(data) == 0) return(plotly_empty())
+    songs_df <- filtered_trend()
+    if (nrow(songs_df) == 0) return(plotly_empty())
     req(input$trend_layers)
     layer <- input$trend_layers[1]
-    df <- data %>%
-      mutate(Year = as.numeric(release_date))
+    songs_df <- songs_df %>% mutate(Year = as.numeric(substr(release_date, 1, 4)))
+    person_edge_types <- c("PerformerOf", "ComposerOf", "LyricistOf", "ProducerOf")
+
     if (layer == "Song Count") {
-      df_sum <- df %>%
+      df_sum <- songs_df %>%
         group_by(Year, genre) %>%
-        summarize(Count = n(), .groups = 'drop')
+        summarise(Count = n(), .groups = "drop")
       fill_label <- "Count"
     } else if (layer == "Artist Count") {
-      df_sum <- df %>%
-        filter(group == "Person") %>%
+      artist_edges <- edges_tbl %>%
+        filter(target %in% songs_df$index, `Edge Type` %in% person_edge_types)
+      artists_df <- artist_edges %>%
+        left_join(nodes_tbl %>% mutate(index = row_number()) %>% select(index, artist_name = name), 
+                  by = c("from" = "index")) %>%
+        left_join(songs_df %>% select(index, genre, release_date), by = c("to" = "index")) %>%
+        mutate(Year = as.numeric(substr(release_date, 1, 4))) %>%
+        filter(!is.na(Year), !is.na(artist_name))
+      df_sum <- artists_df %>%
         group_by(Year, genre) %>%
-        summarize(Count = n(), .groups = 'drop')
+        summarise(Count = n_distinct(artist_name), .groups = "drop")
       fill_label <- "Artist Count"
     } else if (layer == "Newcomer Count") {
-      df_person <- df %>%
-        filter(group == "Person") %>%
-        select(label, Year, genre)  # label 是人名，或用 name 字段
-
-      # 找到每个人首次出现的年份
-      first_appear <- df_person %>%
-        group_by(label, genre) %>%
-        summarize(first_year = min(Year, na.rm = TRUE), .groups = 'drop')
-
-      # 统计每年每 genre 新人数量
-      df_sum <- first_appear %>%
-        group_by(first_year, genre) %>%
-        summarize(Count = n(), .groups = 'drop') %>%
-        rename(Year = first_year)
+      artist_edges <- edges_tbl %>%
+        filter(target %in% songs_df$index, `Edge Type` %in% person_edge_types)
+      artists_df <- artist_edges %>%
+        left_join(nodes_tbl %>% mutate(index = row_number()) %>% select(index, artist_name = name), 
+                  by = c("from" = "index")) %>%
+        left_join(songs_df %>% select(index, genre, release_date), by = c("to" = "index")) %>%
+        mutate(Year = as.numeric(substr(release_date, 1, 4))) %>%
+        filter(!is.na(Year), !is.na(artist_name))
+      first_year <- artists_df %>%
+        group_by(artist_name, genre) %>%
+        summarise(FirstYear = min(Year, na.rm = TRUE), .groups = "drop")
+      df_sum <- first_year %>%
+        group_by(Year = FirstYear, genre) %>%
+        summarise(Count = n(), .groups = "drop")
       fill_label <- "Newcomer Count"
+    } else {
+      return(plotly_empty())
     }
-    years <- sort(unique(df_sum$Year))
-    breaks <- years[seq(1, length(years), by = 2)]
+
+    if (nrow(df_sum) == 0) return(plotly_empty())
+    breaks <- sort(unique(df_sum$Year))
+    breaks <- breaks[seq(1, length(breaks), by = 2)]
+
     p <- ggplot(df_sum, aes(x = factor(Year), y = genre, fill = Count)) +
-      geom_tile() +
+      geom_tile(color = "white") +
       scale_fill_viridis_c() +
       labs(x = "Year", y = "Genre", fill = fill_label) +
       theme_minimal() +
@@ -2286,6 +2097,9 @@ server <- function(input, output, session) {
       scale_x_discrete(breaks = breaks)
     ggplotly(p)
   })
+  
+  
+  
   
   output$trend_cumulative_plot <- renderPlotly({
     data <- filtered_trend()
@@ -2348,7 +2162,9 @@ server <- function(input, output, session) {
   
   comm_filtered_nodes <- reactive({
     req(input$comm_from_node_type, input$comm_to_node_type)
-    nodes_vn %>% filter(group %in% input$comm_from_node_type | group %in% input$comm_to_node_type)
+    nodes_vn %>% filter(group %in% input$comm_from_node_type | group %in% input$comm_to_node_type) %>%
+      mutate(color.background = unname(sapply(group, function(g) node_colors[[g]]$fill)),
+             color.border = unname(sapply(group, function(g) node_colors[[g]]$border)))
   })
   
   comm_filtered_edges <- reactive({
@@ -2365,6 +2181,17 @@ server <- function(input, output, session) {
   })
   
   output$commNetwork <- renderVisNetwork({
+    print('renderVisNetwork: commNetwork')
+    nodes <- as.data.frame(comm_filtered_nodes())
+    edges <- as.data.frame(comm_filtered_edges())
+    nodes[] <- lapply(nodes, unname)
+    edges[] <- lapply(edges, unname)
+    rownames(nodes) <- NULL
+    rownames(edges) <- NULL
+    print(str(nodes))
+    print(str(edges))
+    req(nodes, edges)
+    
     nodes <- comm_filtered_nodes()
     edges <- comm_filtered_edges() %>%
       filter(from %in% nodes$id, to %in% nodes$id) %>%
@@ -2389,37 +2216,53 @@ server <- function(input, output, session) {
       return(visNetwork(nodes = data.frame(id = 1, label = "No data"), edges = data.frame(from = integer(), to = integer())))
     }
     visNetwork(nodes, edges, width = "100%", height = "600px") %>%
-      visNodes(color = list(background = nodes$color), shape = nodes$shape) %>%
-      visEdges(arrows = "to", color = list(color = edges$color)) %>%
-      visOptions(highlightNearest = TRUE, nodesIdSelection = TRUE) %>%
-      visLegend(position = "right", addEdges = data.frame(
-        label = unique(edges$label), color = unique(edges$color)
-      )) %>%
+      visNodes(
+        color = list(background = unname(nodes$color.background)),
+        shape = unname(nodes$shape)
+      ) %>%
+      visEdges(
+        arrows = "to",
+        color = list(color = unname(edges$color))  # 如果 edges 没有 color 这一列，可去掉
+      ) %>%
+      visOptions(highlightNearest = TRUE) %>%
       visPhysics(solver = "forceAtlas2Based") %>%
       visLayout(randomSeed = 123)
+    
   })
   
   output$commEdgeTable <- renderDT({
     edges <- comm_filtered_edges() %>%
       left_join(nodes_vn %>% select(id, from_name = label, from_type = group, from_genre = genre), by = c("from" = "id")) %>%
-      left_join(nodes_vn %>% select(id, to_name = label, to_type = group, to_genre = genre), by = c("to" = "id")) %>%
+      left_join(nodes_vn %>% select(id, to_name = label, to_type = group, to_genre = genre, release_date), by = c("to" = "id")) %>%
       select(
-        from_name, from_type, from_genre,
+        from_name, from_type, 
         to_name, to_type, to_genre,
         label,   # edge type
-        length
+        
+        release_date
       ) %>%
       rename(
         "From" = from_name,
         "From Type" = from_type,
-        "From Genre" = from_genre,
         "To" = to_name,
         "To Type" = to_type,
         "To Genre" = to_genre,
         "Edge Type" = label,
-        "Edge Length" = length
+        "Work Release Time" = release_date
       )
-    datatable(edges, options = list(pageLength = 10, scrollX = TRUE), rownames = FALSE)
+    datatable(
+      edges,  # 你要展示的数据框
+      options = list(
+        pageLength = 10,
+        scrollX = TRUE,
+            
+        autoWidth = TRUE,
+        columnDefs = list(list(width = '150px', targets = "_all")),
+        fixedHeader = TRUE
+      ),
+      rownames = FALSE,
+      
+    )
   })
   
   output$commEdgeSummary <- renderPrint({
@@ -2434,7 +2277,477 @@ server <- function(input, output, session) {
     cat("\nFrom Node Genre Distribution:\n")
     print(genre_count)
   })
+
+  output$influenceTrendTable <- renderDT({
+    nodes <- all_nodes
+    edges <- edges_df
+    target_genre <- input$trend_target_genre
+    detail_df <- edges %>%
+      left_join(nodes %>% select(id, from_name = name, from_type = `Node Type`), by = c("source" = "id")) %>%
+      left_join(nodes %>% select(id, to_name = name, to_type = `Node Type`, to_release_date = release_date, to_genre = genre), by = c("target" = "id")) %>%
+      mutate(Year = as.numeric(substr(to_release_date, 1, 4))) %>%
+      filter(!is.na(Year) & Year >= 1900 & Year <= 2100) %>%
+      filter(!is.na(to_genre) & tolower(trimws(to_genre)) == tolower(trimws(target_genre))) %>%
+      filter(to_type %in% c("Song", "Album"), from_type %in% c("Song", "Album"))
+
+    # 联动 From Node Type
+    if (!is.null(input$trend_from_type) && input$trend_from_type != "Both") {
+      detail_df <- detail_df %>% filter(from_type == input$trend_from_type)
+    }
+
+    detail_df <- detail_df %>%
+      select(
+        Year,
+        From_Node = from_name,
+        From_Type = from_type,
+        To_Node = to_name,
+        To_Type = to_type,
+        Edge_Type = `Edge Type`,
+        To_Release_Date = to_release_date,
+        To_Genre = to_genre
+      ) %>%
+      arrange(Year, To_Node)
+
+    if (nrow(detail_df) == 0) {
+      datatable(data.frame(Message = "No data to display"), options = list(dom = 't'))
+    } else {
+      datatable(detail_df, options = list(pageLength = 10, scrollX = TRUE), rownames = FALSE)
+    }
+  })
+
+
+  library(dplyr)
+  library(circlize)
+  library(jsonlite)
+  
+  output$genreChordDiagram <- renderPlot({
+    circos.clear()
+    
+    # 你需要提前读入的数据
+    # nodes_df <- as.data.frame(fromJSON("data/MC1_graph.json")$nodes)
+    # edges_df <- as.data.frame(fromJSON("data/MC1_graph.json")$links)
+    # 如果已经有 all_nodes 和 edges_df 则无需重新读入
+    
+    edge_types <- c("InStyleOf", "CoverOf", "InterpolatesFrom", "LyricalReferenceTo", "DirectlySamples")
+    
+    # enrich edges with genre info
+    chord_edges <- edges_df %>%
+      left_join(all_nodes %>% select(id, from_genre = genre, from_node_type = `Node Type`), by = c("source" = "id")) %>%
+      left_join(all_nodes %>% select(id, to_genre = genre, to_node_type = `Node Type`), by = c("target" = "id")) %>%
+      filter(
+        !is.na(from_genre), !is.na(to_genre),
+        from_genre == "Oceanus Folk",
+        to_genre != "Oceanus Folk",
+        `Edge Type` %in% edge_types
+      )
+    
+    chord_df <- chord_edges %>%
+      group_by(to_genre 
+                ,from_genre ) %>%
+      summarise(value = n(), .groups = "drop")
+    
+    # 如无数据则直接退出
+    if (nrow(chord_df) == 0) {
+      plot.new()
+      text(0.5, 0.5, "No data to display for chord diagram.")
+      return()
+    }
+    
+    # 定义颜色（可以替换成你想要的 palette）
+    base_colors <- c(
+      "Alternative Rock"        = "#f78e84",
+      "Americana"               = "#d56d30",
+      "Avant-Garde Folk"        = "#d99000",
+      "Blues Rock"              = "#daa520",
+      "Darkwave"                = "#827400",
+      "Desert Rock"             = "#7b8b19",
+      "Doom Metal"              = "#5d9200",
+      "Dream Pop"               = "#3cb100",
+      "Emo/Pop Punk"            = "#00b15a",
+      "Indie Folk"              = "#00b983",
+      "Indie Pop"               = "#00c4a1",
+      "Indie Rock"              = "#00ccc2",
+      "Jazz Surf Rock"          = "#00d3d4",
+      "Lo-Fi Electronica"       = "#00b3ed",
+      "Oceanus Folk"            = "#2095f2",
+      "Post-Apocalyptic Folk"   = "#339dff",
+      "Psychedelic Rock"        = "#8f95ff",
+      "Southern Gothic Rock"    = "#a08fff",
+      "Space Rock"              = "#cc84ff",
+      "Speed Metal"             = "#e374e6",
+      "Symphonic Metal"         = "#f270d0",
+      "Synthpop"                = "#f36ebe",
+      "Synthwave"               = "#f57caa",
+      "Acoustic Folk"           = "#a3d977",  # 新增
+      "Celtic Folk"             = "#80cbc4",  # 新增
+      "Sea Shanties"            = "#ba68c8"  # 新增
+    )
+    
+    # 添加缺失 genre 的默认颜色
+    genre_list <- union(chord_df$to_genre, chord_df$from_genre)
+    missing_genres <- setdiff(genre_list, names(base_colors))
+    default_colors <- rep("#d3d3d3", length(missing_genres))
+    genre_colors <- c(base_colors, setNames(default_colors, missing_genres))
+    
+    # 画图
+    chordDiagram(
+      x = chord_df,
+      grid.col = genre_colors,
+      transparency = 0.2,
+      directional = 1,
+      direction.type = c("diffHeight"),
+      annotationTrack = "grid",
+      preAllocateTracks = 1
+    )
+    
+    circos.trackPlotRegion(
+      track.index = 1, 
+      panel.fun = function(x, y) {
+        sector.name <- get.cell.meta.data("sector.index")
+        xlim <- get.cell.meta.data("xlim")
+        ylim <- get.cell.meta.data("ylim")
+        circos.text(
+          x = mean(xlim), 
+          y = ylim[1] + .1, 
+          labels = sector.name,
+          facing = "clockwise", 
+          niceFacing = TRUE, 
+          adj = c(0, 0.5),
+          cex = 0.7  # 可以调整字号大小
+        )
+      }, 
+      bg.border = NA
+    )
+    
+    
+    
+  })
+  
+  output$genreChordTable <- DT::renderDataTable({
+    req(input$genre_chord_edge_type, input$genre_chord_from_node_type, input$genre_chord_to_node_type, input$chord_from_genre, input$chord_to_genre)
+    edge_types <- input$genre_chord_edge_type
+    from_types <- input$genre_chord_from_node_type
+    to_types <- input$genre_chord_to_node_type
+    from_genres <- input$chord_from_genre
+    to_genres <- input$chord_to_genre
+    nodes <- all_nodes
+    edges <- edges_df
+
+    chord_edges <- edges %>%
+      left_join(nodes %>% select(id, from_genre = genre, from_node_type = `Node Type`), by = c("source" = "id")) %>%
+      left_join(nodes %>% select(id, to_genre = genre, to_node_type = `Node Type`), by = c("target" = "id")) %>%
+      filter(
+        !is.na(from_genre), !is.na(to_genre),
+        from_genre %in% from_genres,
+        to_genre %in% to_genres,
+        `Edge Type` %in% edge_types,
+        from_node_type %in% from_types,
+        to_node_type %in% to_types
+      )
+
+    chord_df <- chord_edges %>%
+      group_by(from_genre, from_node_type, to_genre, to_node_type, `Edge Type`) %>%
+      summarise(value = n(), .groups = "drop") %>%
+      arrange(desc(value))
+
+    if (nrow(chord_df) == 0) {
+      return(data.frame(Message = "No data to display"))
+    } else {
+      DT::datatable(
+        chord_df,
+        colnames = c("From Genre", "From Node Type", "To Genre", "To Node Type", "Edge Type", "Count"),
+        options = list(pageLength = 10, scrollX = TRUE),
+        rownames = FALSE
+      )
+    }
+  })
+
+  output$interactiveChorddiag <- chorddiag::renderChorddiag({
+    edge_types <- input$genre_chord_edge_type
+    from_types <- input$genre_chord_from_node_type
+    to_types <- input$genre_chord_to_node_type
+    from_genres <- input$chord_from_genre
+    to_genres <- input$chord_to_genre
+    # 新增：获取时间滑块
+    pre_year_range <- input$pre_sailor_year
+    post_year_range <- input$post_sailor_year
+    # 新增：过滤节点
+    nodes <- all_nodes %>%
+      mutate(release_year = as.numeric(release_date)) %>%
+      filter(
+        (release_year >= pre_year_range[1] & release_year <= pre_year_range[2]) |
+        (release_year >= post_year_range[1] & release_year <= post_year_range[2])
+      )
+    edges <- edges_df
+    chord_edges <- edges %>%
+      left_join(nodes %>% select(id, from_genre = genre, from_node_type = `Node Type`, from_release_year = release_year), by = c("source" = "id")) %>%
+      left_join(nodes %>% select(id, to_genre = genre, to_node_type = `Node Type`, to_release_year = release_year), by = c("target" = "id")) %>%
+      filter(
+        !is.na(from_genre), !is.na(to_genre),
+        from_genre %in% from_genres,
+        to_genre %in% to_genres,
+        `Edge Type` %in% edge_types,
+        from_node_type %in% from_types,
+        to_node_type %in% to_types,
+        # 新增：from/to节点release_year都在所选区间
+        (
+          (from_release_year >= pre_year_range[1] & from_release_year <= pre_year_range[2]) |
+          (from_release_year >= post_year_range[1] & from_release_year <= post_year_range[2])
+        ) &
+        (
+          (to_release_year >= pre_year_range[1] & to_release_year <= pre_year_range[2]) |
+          (to_release_year >= post_year_range[1] & to_release_year <= post_year_range[2])
+        )
+      )
+
+    chord_df <- chord_edges %>%
+      group_by(from_genre, to_genre) %>%
+      summarise(value = n(), .groups = "drop")
+
+    if (nrow(chord_df) == 0) {
+      return(NULL)
+    }
+
+    genre_list <- unique(c(chord_df$from_genre, chord_df$to_genre))
+    genre_matrix <- matrix(0, nrow = length(genre_list), ncol = length(genre_list),
+                           dimnames = list(genre_list, genre_list))
+    for (i in seq_len(nrow(chord_df))) {
+      genre_matrix[chord_df$from_genre[i], chord_df$to_genre[i]] <- chord_df$value[i]
+    }
+    genre_matrix <- t(genre_matrix)
+
+    
+    base_colors <- c(
+      "Alternative Rock"        = "#f78e84",
+      "Americana"               = "#d56d30",
+      "Avant-Garde Folk"        = "#d99000",
+      "Blues Rock"              = "#daa520",
+      "Darkwave"                = "#827400",
+      "Desert Rock"             = "#7b8b19",
+      "Doom Metal"              = "#5d9200",
+      "Dream Pop"               = "#3cb100",
+      "Emo/Pop Punk"            = "#00b15a",
+      "Indie Folk"              = "#00b983",
+      "Indie Pop"               = "#00c4a1",
+      "Indie Rock"              = "#00ccc2",
+      "Jazz Surf Rock"          = "#00d3d4",
+      "Lo-Fi Electronica"       = "#00b3ed",
+      "Oceanus Folk"            = "#2095f2",
+      "Post-Apocalyptic Folk"   = "#339dff",
+      "Psychedelic Rock"        = "#8f95ff",
+      "Southern Gothic Rock"    = "#a08fff",
+      "Space Rock"              = "#cc84ff",
+      "Speed Metal"             = "#e374e6",
+      "Symphonic Metal"         = "#f270d0",
+      "Synthpop"                = "#f36ebe",
+      "Synthwave"               = "#f57caa",
+      "Acoustic Folk"           = "#a3d977",  # 新增
+      "Celtic Folk"             = "#80cbc4",  # 新增
+      "Sea Shanties"            = "#ba68c8"  # 新增
+    )
+    
+    
+    missing_genres <- setdiff(genre_list, names(base_colors))
+    default_colors <- rep("#d3d3d3", length(missing_genres))
+    genre_colors <- c(base_colors, setNames(default_colors, missing_genres))
+    genre_colors <- unname(genre_colors[genre_list])
+
+    chorddiag::chorddiag(
+      genre_matrix,
+      groupnamePadding = 20,
+      showTicks = FALSE,
+      groupColors = genre_colors,
+      margin = 130,
+      tooltipGroupConnector = " → ",
+      groupnameFontsize = 13
+    )
+  })
+
+  output$topInfluencedSankeyPlotly <- renderPlotly({
+ 
+    selected_genre <- input$top_influenced_genre
+    top_k <- as.numeric(input$top_influenced_n)
+    target_nodes <- nodes_tbl %>%
+      filter(`Node Type` %in% c("Song", "Album"), genre == selected_genre)
+    influence_types <- c("InStyleOf", "CoverOf", "DirectlySamples", "InterpolatesFrom", "LyricalReferenceTo")
+    influences_to_oceanus <- edges_tbl %>%
+      filter(`Edge Type` %in% influence_types, target %in% target_nodes$id)
+    source_nodes <- nodes_tbl %>%
+      filter(id %in% influences_to_oceanus$source, !is.na(genre))
+    mid_genre_df <- influences_to_oceanus %>%
+      left_join(source_nodes, by = c("source" = "id")) %>%
+      filter(`Node Type` %in% c("Song", "Album"), !is.na(genre), genre != selected_genre ) %>%
+      select(source_genre = genre, source_id = source, target_id = target, edge_type_to_ocean = `Edge Type`)
+    people_roles <- input$top_influenced_edge_type
+    people_edges <- edges_tbl %>%
+      filter(`Edge Type` %in% people_roles, target %in% mid_genre_df$source_id) %>%
+      rename(edge_type_from_person = `Edge Type`)
+    people <- nodes_tbl %>%
+      filter(id %in% people_edges$source, `Node Type` %in% c("Person", "MusicalGroup")) %>%
+      select(id, person_name = node_name)
+    sankey_df <- people_edges %>%
+      left_join(mid_genre_df, by = c("target" = "source_id"), relationship = "many-to-many") %>%
+      left_join(people, by = c("source" = "id")) %>%
+      mutate(target_genre = selected_genre) %>%
+      select(person_name, source_genre, target_genre, edge_type_from_person, edge_type_to_ocean)
+    top_people <- sankey_df %>%
+      count(person_name, sort = TRUE) %>%
+      slice_max(n, n = top_k) %>%
+      pull(person_name)
+    sankey_df <- sankey_df %>%
+      filter(person_name %in% top_people)
+    node_list <- unique(c(sankey_df$person_name, sankey_df$source_genre, selected_genre))
+    sankey_nodes_df <- data.frame(name = node_list, stringsAsFactors = FALSE)
+    link1 <- sankey_df %>%
+      count(source = person_name, target = source_genre, edge_type = edge_type_from_person) %>%
+      mutate(
+        source_id = match(source, node_list) - 1,
+        target_id = match(target, node_list) - 1,
+        hover = paste0(source, " → ", target, "<br>Type: ", edge_type, "<br>Count: ", n)
+      ) %>%
+      filter(!is.na(source_id), !is.na(target_id))
+
+    link2 <- sankey_df %>%
+      count(source = source_genre, target = target_genre, edge_type = edge_type_to_ocean) %>%
+      mutate(
+        source_id = match(source, node_list) - 1,
+        target_id = match(target, node_list) - 1,
+        hover = paste0(source, " → ", target, "<br>Type: ", edge_type, "<br>Count: ", n)
+      ) %>%
+      filter(!is.na(source_id), !is.na(target_id))
+
+    links_df <- bind_rows(link1, link2)
+    base_colors <- c(
+      "Alternative Rock"        = "#f78e84",
+      "Americana"               = "#d56d30",
+      "Avant-Garde Folk"        = "#d99000",
+      "Blues Rock"              = "#daa520",
+      "Darkwave"                = "#827400",
+      "Desert Rock"             = "#7b8b19",
+      "Doom Metal"              = "#5d9200",
+      "Dream Pop"               = "#3cb100",
+      "Emo/Pop Punk"            = "#00b15a",
+      "Indie Folk"              = "#00b983",
+      "Indie Pop"               = "#00c4a1",
+      "Indie Rock"              = "#00ccc2",
+      "Jazz Surf Rock"          = "#00d3d4",
+      "Lo-Fi Electronica"       = "#00b3ed",
+      "Oceanus Folk"            = "#2095f2",
+      "Post-Apocalyptic Folk"   = "#339dff",
+      "Psychedelic Rock"        = "#8f95ff",
+      "Southern Gothic Rock"    = "#a08fff",
+      "Space Rock"              = "#cc84ff",
+      "Speed Metal"             = "#e374e6",
+      "Symphonic Metal"         = "#f270d0",
+      "Synthpop"                = "#f36ebe",
+      "Synthwave"               = "#f57caa",
+      "Acoustic Folk"           = "#a3d977",  # 新增
+      "Celtic Folk"             = "#80cbc4",  # 新增
+      "Sea Shanties"            = "#ba68c8"  # 新增
+    )
+    # 修复 node_colors 的写法（避免 %||% 出错）
+    node_colors <- sapply(sankey_nodes_df$name, function(name) {
+      if (name %in% sankey_df$person_name) {
+        "#cccccc"
+      } else {
+        if (!is.null(base_colors[[name]])) base_colors[[name]] else "#cccccc"
+      }
+    }) %>% alpha(0.7)
+    
+    # 修复可能造成崩溃的 link_colors 写法（不变）
+    link_colors <- links_df$target %>%
+      map_chr(~ {
+        if (.x %in% names(base_colors)) {
+          base_colors[[.x]]
+        } else {
+          "#bbbbbb"
+        }
+      }) %>%
+      alpha(0.4)
+     
+    p <- plot_ly(
+      type = "sankey",
+      domain = list(x = c(0, 1), y = c(0, 1)),
+      orientation = "h",
+      source = "sankeyGenre",
+      node = list(
+        label = sankey_nodes_df$name,
+        color = node_colors,
+        pad = 15,
+        thickness = 20,
+        line = list(color = "gray30", width = 0.5),
+        hovertemplate = paste("Node: %{label}<extra></extra>")
+      ),
+      link = list(
+        source = links_df$source_id,
+        target = links_df$target_id,
+        value = links_df$n,
+        color = link_colors,
+        customdata = links_df$hover,
+        hovertemplate = "%{customdata}<extra></extra>"
+      )
+    ) %>%
+      layout(
+        font = list(size = 12),
+        margin = list(l = 20, r = 20, b = 20, t = 40),
+        title = paste("Sankey Flow to", selected_genre, "→ Genres → Artists ")
+      )
+    p <- event_register(p, 'plotly_click')
+    p
+  })
+
+  output$topInfluencedSankeyTable <- DT::renderDataTable({
+    selected_genre <- input$top_influenced_genre
+    top_k <- as.numeric(input$top_influenced_n)
+    influence_types <- c("InStyleOf", "CoverOf", "DirectlySamples", "InterpolatesFrom", "LyricalReferenceTo")
+    target_nodes <- nodes_tbl %>%
+      filter(`Node Type` %in% c("Song", "Album"), genre == selected_genre)
+    influences_to_oceanus <- edges_tbl %>%
+      filter(`Edge Type` %in% influence_types, target %in% target_nodes$id)
+    source_nodes <- nodes_tbl %>%
+      filter(id %in% influences_to_oceanus$source, !is.na(genre))
+    mid_genre_df <- influences_to_oceanus %>%
+      left_join(source_nodes, by = c("source" = "id")) %>%
+      filter(`Node Type` %in% c("Song", "Album"), !is.na(genre), genre != selected_genre ) %>%
+      select(source_genre = genre, source_id = source, target_id = target, edge_type_to_ocean = `Edge Type`)
+    people_roles <- input$top_influenced_edge_type
+    people_edges <- edges_tbl %>%
+      filter(`Edge Type` %in% people_roles, target %in% mid_genre_df$source_id) %>%
+      rename(edge_type_from_person = `Edge Type`)
+    people <- nodes_tbl %>%
+      filter(id %in% people_edges$source, `Node Type` %in% c("Person", "MusicalGroup")) %>%
+      select(id, person_name = node_name)
+    # 对 mid_genre_df 按 source_id 去重，只保留一条记录
+    mid_genre_df_one <- mid_genre_df %>% distinct(source_id, .keep_all = TRUE)
+    sankey_df <- people_edges %>%
+      left_join(mid_genre_df_one, by = c("target" = "source_id")) %>%
+      left_join(people, by = c("source" = "id")) %>%
+      mutate(target_genre = selected_genre) %>%
+      select(person_name, source_genre, target_genre, edge_type_from_person, edge_type_to_ocean)
+    top_people <- sankey_df %>%
+      count(person_name, sort = TRUE) %>%
+      slice_max(n, n = top_k) %>%
+      pull(person_name)
+    sankey_df <- sankey_df %>%
+      filter(person_name %in% top_people)
+    # 统计每组出现次数
+    sankey_table <- sankey_df %>%
+      group_by(person_name, source_genre, target_genre, edge_type_from_person, edge_type_to_ocean) %>%
+      summarise(n = n(), .groups = "drop")
+    DT::datatable(
+      sankey_table,
+      colnames = c("Artist", "From Genre", "To Genre", "Person-Work Edge Type", "Genre-Work Edge Type", "Person-Work Count"),
+      options = list(pageLength = 10, scrollX = TRUE),
+      rownames = FALSE
+    )
+  })
+
 }
+
+
 
 # Run the app
 shinyApp(ui = ui, server = server)
+
+
+

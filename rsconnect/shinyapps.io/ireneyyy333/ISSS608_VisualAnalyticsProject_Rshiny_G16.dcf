@@ -5,8 +5,9 @@ account: ireneyyy333
 server: shinyapps.io
 hostUrl: https://api.shinyapps.io/v1
 appId: 15005582
-bundleId: 10580521
+bundleId: 10644040
 url: https://ireneyyy333.shinyapps.io/ISSS608_VisualAnalyticsProject_Rshiny_G16/
 version: 1
 asMultiple: FALSE
 asStatic: FALSE
+ignoredFiles: .RData|EchoScope_R_Shiny_App_User_Guide.pdf|history_database|www/EchoScope_R_Shiny_App_User_Guide.pdf
